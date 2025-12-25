@@ -1,0 +1,6 @@
+# Invalid speak CLI configuration for testing
+
+temperature = 2.5
+speed = -1
+markdown_mode = "invalid_mode"
+log_level = "verbose"
