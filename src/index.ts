@@ -49,7 +49,7 @@ program
     const { startDaemon, stopDaemon } = await import("./bridge/daemon.ts");
     const { generate } = await import("./bridge/client.ts");
     const { copyToOutput, playAudio, registerCleanupHandlers, stopAudio } = await import("./core/output.ts");
-    const { isVenvValid } = await import("./python/setup.ts");
+    const { isVenvValid, runSetup } = await import("./python/setup.ts");
     const { processMarkdown, isMarkdown, extractFirstSentence } = await import(
       "./core/markdown.ts"
     );
@@ -68,10 +68,19 @@ program
       verbose: options.verbose,
     });
 
-    // Check if setup has been run
+    // Auto-setup on first run
     if (!isVenvValid()) {
-      console.log(pc.red("Python environment not set up. Run 'speak setup' first."));
-      process.exit(1);
+      if (!options.quiet) {
+        console.log(pc.cyan("First run detected - setting up Python environment...\n"));
+      }
+      const success = await runSetup({ showProgress: !options.quiet });
+      if (!success) {
+        console.log(pc.red("\nSetup failed. Please run 'speak setup' manually for details."));
+        process.exit(1);
+      }
+      if (!options.quiet) {
+        console.log(pc.green("\n✓ Setup complete!\n"));
+      }
     }
 
     // Get text input

@@ -5,16 +5,23 @@ A CLI tool for converting text to speech using Chatterbox TTS on Apple Silicon.
 ## Quick Start
 
 ```bash
-# First-time setup (installs Python dependencies)
-bun run src/index.ts setup
+# Clone and install
+git clone https://github.com/EmZod/speak.git
+cd speak
+bun install
 
-# Generate speech from text
+# Generate speech (auto-sets up Python on first run)
 bun run src/index.ts "Hello, world!" --play
 
 # Or create an alias
-alias speak="bun run /Users/jay/Documents/speak/src/index.ts"
+alias speak="bun run $(pwd)/src/index.ts"
 speak "Hello, world!" --play
 ```
+
+That's it! On first run, speak automatically:
+1. Creates a Python virtual environment at `~/.chatter/env/`
+2. Installs mlx-audio and dependencies
+3. Downloads the TTS model (cached at `~/.cache/huggingface/hub/`)
 
 ## Installation
 
@@ -23,18 +30,14 @@ speak "Hello, world!" --play
 - [Bun](https://bun.sh) runtime
 - Python 3.10+
 
-### Setup
+### Manual Setup (optional)
+
+If you prefer to set up manually or need to troubleshoot:
 
 ```bash
-# Clone and install dependencies
-cd /Users/jay/Documents/speak
-bun install
-
-# Set up Python environment (one-time)
-bun run src/index.ts setup
+bun run src/index.ts setup          # Set up Python environment
+bun run src/index.ts setup --health # Check environment health
 ```
-
-This creates a managed Python virtual environment at `~/.chatter/env/` with mlx-audio and dependencies.
 
 ## Usage
 
