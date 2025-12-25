@@ -39,6 +39,43 @@ bun run src/index.ts setup          # Set up Python environment
 bun run src/index.ts setup --health # Check environment health
 ```
 
+### Making `speak` Available Globally
+
+After installation, `speak` won't be available as a global command by default. Choose one of these options:
+
+**Option 1: Shell Alias (Recommended)**
+
+Add to your `~/.zshrc` (or `~/.bashrc` for Bash):
+
+```bash
+# Speak TTS CLI
+alias speak="bun run /path/to/speak/src/index.ts"
+```
+
+Then reload your shell:
+```bash
+source ~/.zshrc
+```
+
+**Option 2: Symlink Wrapper**
+
+```bash
+# Create a wrapper script
+echo '#!/bin/bash
+bun run /path/to/speak/src/index.ts "$@"' | sudo tee /usr/local/bin/speak
+sudo chmod +x /usr/local/bin/speak
+```
+
+**Option 3: Add to PATH**
+
+Add the speak directory to your PATH in `~/.zshrc`:
+
+```bash
+export PATH="/path/to/speak:$PATH"
+```
+
+> **Note:** Replace `/path/to/speak` with your actual installation directory (e.g., `~/Documents/speak`).
+
 ## Usage
 
 ### Basic Usage
