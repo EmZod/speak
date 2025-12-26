@@ -95,9 +95,11 @@ Change spawn to `stdio: "ignore"` and poll the socket for readiness instead of r
 **Pros**: Completely detached from start  
 **Cons**: More complex, requires timeout-based polling
 
-## Chosen Approach: Option A
+## Chosen Approach: Option A (Extended)
 
-The simplest and most robust fix is to make Python handle SIGPIPE gracefully.
+The fix has two parts:
+1. Make Python handle SIGPIPE gracefully for server logging
+2. Redirect stderr during generation to prevent mlx_audio library writes from causing BrokenPipeError
 
 ### Implementation
 
@@ -123,12 +125,20 @@ def log(level: str, message: str, **data):
         pass
 ```
 
-3. Also protect the initial ready signal:
+3. Protect the initial ready signal:
 ```python
 try:
     print(json.dumps({"status": "ready", "socket": SOCKET_PATH}), flush=True)
 except BrokenPipeError:
     pass
+```
+
+4. Redirect both stdout AND stderr during generate_audio calls (mlx_audio writes to stderr):
+```python
+from contextlib import redirect_stdout, redirect_stderr
+
+with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+    generate_audio(...)
 ```
 
 ### Testing Plan
