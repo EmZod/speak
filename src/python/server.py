@@ -14,6 +14,7 @@ Methods:
 
 import json
 import os
+import signal
 import socket
 import sys
 import tempfile
@@ -21,6 +22,10 @@ import time
 import traceback
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+# Ignore SIGPIPE to prevent crashes when parent process exits
+# This allows the daemon to survive after the spawning Node.js process terminates
+signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
 # Configuration
 SOCKET_PATH = os.path.expanduser("~/.chatter/speak.sock")
@@ -98,7 +103,11 @@ def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
 def log(level: str, message: str, **data):
     """Simple logging to stderr"""
     entry = {"level": level, "message": message, "timestamp": time.time(), **data}
-    print(json.dumps(entry), file=sys.stderr, flush=True)
+    try:
+        print(json.dumps(entry), file=sys.stderr, flush=True)
+    except BrokenPipeError:
+        # Parent process exited, stderr pipe is closed - continue silently
+        pass
 
 
 def load_model(model_name: str):
@@ -178,9 +187,9 @@ def handle_generate(request_id: str, params: Dict, conn=None) -> Dict:
         start = time.time()
         timestamp = int(time.time() * 1000)
 
-        # Capture stdout to suppress verbose output
+        # Capture stdout/stderr to suppress verbose output and prevent broken pipe errors
         import io
-        from contextlib import redirect_stdout
+        from contextlib import redirect_stdout, redirect_stderr
 
         all_audio = []
         sample_rate = None
@@ -190,7 +199,7 @@ def handle_generate(request_id: str, params: Dict, conn=None) -> Dict:
 
             log("debug", f"Generating chunk {i+1}/{len(chunks)}: {len(chunk)} chars")
 
-            with redirect_stdout(io.StringIO()):
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 generate_audio(
                     text=chunk,
                     model=model_name,
@@ -272,7 +281,7 @@ def handle_generate_stream(request_id: str, params: Dict, conn) -> Dict:
         from mlx_audio.tts.generate import generate_audio
         import scipy.io.wavfile as wavfile
         import io
-        from contextlib import redirect_stdout
+        from contextlib import redirect_stdout, redirect_stderr
 
         # Split text into chunks to prevent model destabilization
         chunks = split_text_into_chunks(text)
@@ -293,7 +302,7 @@ def handle_generate_stream(request_id: str, params: Dict, conn) -> Dict:
             log("debug", f"Generating text chunk {i+1}/{len(chunks)}: {len(text_chunk)} chars")
 
             # Generate this chunk (non-streaming to avoid destabilization)
-            with redirect_stdout(io.StringIO()):
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 generate_audio(
                     text=text_chunk,
                     model=model_name,
@@ -394,7 +403,11 @@ def run_server():
     server.listen(1)
 
     log("info", f"Server listening on {SOCKET_PATH}")
-    print(json.dumps({"status": "ready", "socket": SOCKET_PATH}), flush=True)
+    try:
+        print(json.dumps({"status": "ready", "socket": SOCKET_PATH}), flush=True)
+    except BrokenPipeError:
+        # Parent may have exited before reading ready signal - continue anyway
+        pass
 
     try:
         while True:
