@@ -1,6 +1,6 @@
 # speak
 
-A CLI tool for converting text to speech using Chatterbox TTS on Apple Silicon.
+A fast CLI tool for Agents to convert their text output to speech using Chatterbox TTS on Apple Silicon. Agent SKILL files included. 
 
 ## Quick Start
 
