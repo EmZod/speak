@@ -1,4 +1,4 @@
-# speak
+# Speak
 
 A fast CLI tool for Agents to convert their text output to speech using Chatterbox TTS on Apple Silicon. Agent SKILL files included. 
 
