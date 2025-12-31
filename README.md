@@ -1,6 +1,6 @@
 # speak
 
-A fast, reliable CLI for text-to-speech using Chatterbox TTS on Apple Silicon.
+A fast CLI tool for AI agents to convert their text output to speech using Chatterbox TTS on Apple Silicon.
 
 ## Quick Start
 
