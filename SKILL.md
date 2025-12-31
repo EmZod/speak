@@ -85,6 +85,35 @@ speak health
 speak daemon kill
 ```
 
+## Emotion Tags
+
+Add expressive sounds inline with your text using square bracket tags:
+
+```bash
+speak "[sigh] I can't believe it's Monday again." --stream
+speak "[laugh] That's hilarious!" --stream
+speak "[gasp] You won't believe what happened next..." --stream
+speak "[chuckle] Well, that's one way to do it." --stream
+```
+
+### Supported Tags
+
+| Tag | Effect |
+|-----|--------|
+| `[laugh]` | Laughing sound |
+| `[chuckle]` | Light chuckle |
+| `[sigh]` | Sighing sound |
+| `[gasp]` | Gasping sound |
+| `[groan]` | Groaning sound |
+| `[clear throat]` | Throat clearing |
+| `[cough]` | Coughing sound |
+| `[sniff]` | Sniffing sound |
+| `[shush]` | Shushing sound |
+| `[crying]` | Crying/emotional |
+| `[singing]` | Sung speech |
+
+**Note:** `[pause]` and `[whisper]` are NOT supported - use punctuation (periods, ellipses, commas) for natural pauses instead.
+
 ## Notes
 
 - Requires Apple Silicon Mac (M1/M2/M3)
