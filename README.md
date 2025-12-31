@@ -1,5 +1,7 @@
 # speak
 
+[![Test](https://github.com/EmZod/speak/actions/workflows/test.yml/badge.svg)](https://github.com/EmZod/speak/actions/workflows/test.yml)
+
 A fast CLI tool for AI agents to convert their text output to speech using Chatterbox TTS on Apple Silicon.
 
 ## Quick Start
@@ -81,6 +83,14 @@ speak concat part1.wav part2.wav --out combined.wav
 - **[docs/troubleshooting.md](docs/troubleshooting.md)** - Common issues and fixes
 - **[SKILL.md](SKILL.md)** - Agent-optimized reference
 - **[CHANGELOG.md](CHANGELOG.md)** - Version history
+
+## Development
+
+```bash
+bun install          # Install dependencies
+bun test             # Run tests
+bun run typecheck    # Type check
+```
 
 ## For AI Agents
 
