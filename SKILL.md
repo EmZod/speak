@@ -1,3 +1,8 @@
+---
+name: speak-tts
+description: Local text-to-speech generation using Chatterbox TTS on Apple Silicon. Use this when users request converting text to audio, reading articles/documents aloud, generating speech from clipboard content, voice cloning, or creating audiobook-style narration. Runs entirely on-device via MLX for private TTS. Supports auto-chunking for long documents, batch processing, and resume capability.
+---
+
 # speak - Text to Speech for Agents
 
 Convert text to natural speech audio using Chatterbox TTS on Apple Silicon.
