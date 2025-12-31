@@ -14,6 +14,7 @@ Methods:
 
 import json
 import os
+import select
 import signal
 import socket
 import sys
@@ -30,6 +31,7 @@ signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 # Configuration
 SOCKET_PATH = os.path.expanduser("~/.chatter/speak.sock")
 TEMP_DIR = tempfile.gettempdir()
+IDLE_TIMEOUT_SECONDS = 60 * 60  # 1 hour - auto-shutdown if no TTS requests
 
 # Maximum characters per chunk to prevent model destabilization
 # Chatterbox can destabilize on long sentences, so we split aggressively
@@ -263,6 +265,117 @@ def handle_generate(request_id: str, params: Dict, conn=None) -> Dict:
         }
 
 
+def handle_stream_binary(request_id: str, params: Dict, conn) -> None:
+    """
+    Handle streaming TTS with binary protocol.
+    No file paths sent over wire - samples go directly to socket.
+    
+    Protocol: After receiving JSON request, server switches to binary protocol
+    for response. Uses SPKR binary format for audio chunks.
+    """
+    from binary_protocol import write_chunk, write_end, write_error
+    
+    text = params.get("text", "")
+    if not text:
+        write_error(conn, "No text provided")
+        return
+    
+    model_name = params.get("model", "mlx-community/chatterbox-turbo-8bit")
+    temperature = params.get("temperature", 0.5)
+    speed = params.get("speed", 1.0)
+    voice = params.get("voice")
+    
+    try:
+        from mlx_audio.tts.generate import generate_audio
+        import scipy.io.wavfile as wavfile
+        import numpy as np
+        import io
+        from contextlib import redirect_stdout
+        
+        # Split text into chunks to prevent model destabilization
+        chunks = split_text_into_chunks(text)
+        
+        log("info", f"Binary streaming TTS for {len(text)} chars in {len(chunks)} text chunks",
+            model=model_name, temperature=temperature, speed=speed)
+        start = time.time()
+        
+        timestamp = int(time.time() * 1000)
+        total_samples = 0
+        chunk_id = 0
+        sample_rate = 24000  # Default, will be updated from actual audio
+        
+        for i, text_chunk in enumerate(chunks):
+            chunk_prefix = os.path.join(TEMP_DIR, f"speak_bin_{timestamp}_chunk{i}")
+            
+            log("debug", f"Generating text chunk {i+1}/{len(chunks)}: {len(text_chunk)} chars")
+            
+            # Generate audio (still needs file I/O internally, but we read and send bytes)
+            with redirect_stdout(io.StringIO()):
+                generate_audio(
+                    text=text_chunk,
+                    model=model_name,
+                    ref_audio=voice if voice and os.path.exists(voice) else None,
+                    temperature=temperature,
+                    speed=speed,
+                    file_prefix=chunk_prefix,
+                    audio_format="wav",
+                    play=False,
+                    verbose=False,
+                    stream=False,
+                    max_tokens=2400,
+                )
+            
+            # Find generated file(s)
+            chunk_files = sorted([
+                f for f in os.listdir(TEMP_DIR)
+                if f.startswith(f"speak_bin_{timestamp}_chunk{i}") and f.endswith(".wav")
+            ])
+            
+            for cf in chunk_files:
+                chunk_path = os.path.join(TEMP_DIR, cf)
+                try:
+                    # Read audio as numpy array
+                    sr, audio_data = wavfile.read(chunk_path)
+                    sample_rate = sr
+                    
+                    # Convert to float32 normalized [-1, 1]
+                    if audio_data.dtype == np.int16:
+                        samples = audio_data.astype(np.float32) / 32768.0
+                    elif audio_data.dtype == np.int32:
+                        samples = audio_data.astype(np.float32) / 2147483648.0
+                    else:
+                        samples = audio_data.astype(np.float32)
+                    
+                    # Send via binary protocol
+                    write_chunk(conn, chunk_id, samples, sample_rate)
+                    
+                    total_samples += len(samples)
+                    log("debug", f"Sent binary chunk {chunk_id}: {len(samples)} samples, {len(samples)/sr:.2f}s")
+                    chunk_id += 1
+                    
+                finally:
+                    # Clean up temp file immediately
+                    if os.path.exists(chunk_path):
+                        os.remove(chunk_path)
+        
+        # Send end marker
+        write_end(conn, chunk_id)
+        
+        elapsed = time.time() - start
+        duration = total_samples / sample_rate if sample_rate > 0 else 0
+        rtf = elapsed / duration if duration > 0 else 0
+        
+        log("info", f"Binary stream complete: {chunk_id} chunks, {total_samples} samples, "
+            f"{duration:.2f}s in {elapsed:.2f}s (RTF: {rtf:.2f})")
+        
+    except Exception as e:
+        log("error", f"Binary streaming failed: {e}", traceback=traceback.format_exc())
+        try:
+            write_error(conn, str(e))
+        except:
+            pass  # Connection may already be broken
+
+
 def handle_generate_stream(request_id: str, params: Dict, conn) -> Dict:
     """
     Generate TTS audio with streaming - sends chunks as they're generated.
@@ -372,23 +485,31 @@ def handle_generate_stream(request_id: str, params: Dict, conn) -> Dict:
         }
 
 
-def handle_request(request: Dict, conn=None) -> Dict:
-    """Route request to appropriate handler"""
+def handle_request(request: Dict, conn=None) -> tuple:
+    """Route request to appropriate handler.
+    
+    Returns:
+        (response, is_tts_request) - response may be None for binary streaming
+    """
     request_id = request.get("id", "unknown")
     method = request.get("method", "")
     params = request.get("params", {})
 
     if method == "generate":
-        return handle_generate(request_id, params, conn)
+        return handle_generate(request_id, params, conn), True
+    elif method == "stream-binary":
+        # Binary streaming - no JSON response, switches to binary protocol
+        handle_stream_binary(request_id, params, conn)
+        return None, True  # Signal no JSON response needed
     elif method == "health":
-        return handle_health(request_id, params)
+        return handle_health(request_id, params), False
     elif method == "list-models":
-        return handle_list_models(request_id, params)
+        return handle_list_models(request_id, params), False
     else:
         return {
             "id": request_id,
             "error": {"code": -1, "message": f"Unknown method: {method}"}
-        }
+        }, False
 
 
 def run_server():
@@ -409,8 +530,23 @@ def run_server():
         # Parent may have exited before reading ready signal - continue anyway
         pass
 
+    # Track last TTS inference time for idle shutdown
+    last_tts_time = time.time()
+
     try:
         while True:
+            # Check for idle timeout (1 hour since last TTS)
+            idle_seconds = time.time() - last_tts_time
+            if idle_seconds > IDLE_TIMEOUT_SECONDS:
+                log("info", f"Idle timeout ({IDLE_TIMEOUT_SECONDS}s) - shutting down")
+                break
+
+            # Use select to wait for connection with timeout (check idle every 60s)
+            ready, _, _ = select.select([server], [], [], 60)
+            if not ready:
+                # Timeout - loop back to check idle timeout
+                continue
+
             conn, addr = server.accept()
             log("debug", "Client connected")
 
@@ -443,8 +579,16 @@ def run_server():
                                 return
 
                             # Handle other requests
-                            response = handle_request(request, conn)
-                            conn.send((json.dumps(response) + "\n").encode("utf-8"))
+                            response, is_tts = handle_request(request, conn)
+                            
+                            # Update idle timer on TTS requests
+                            if is_tts:
+                                last_tts_time = time.time()
+                            
+                            # Only send JSON response if handler returned one
+                            # (binary streaming handlers return None)
+                            if response is not None:
+                                conn.send((json.dumps(response) + "\n").encode("utf-8"))
 
                         except json.JSONDecodeError as e:
                             error_response = {"error": {"code": -32700, "message": f"Parse error: {e}"}}

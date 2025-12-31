@@ -1,0 +1,2817 @@
+COMBINED CORE SYSTEM CODE
+Generated on: 2025-12-30T23:13:50.735Z
+================================================================================
+
+FILE: src/index.ts
+
+================================================================================
+#!/usr/bin/env bun
+/**
+ * speak - Convert text to speech using Chatterbox TTS
+ *
+ * Entry point for the speak CLI tool.
+ */
+
+import { Command } from "commander";
+import pc from "picocolors";
+import { existsSync, writeFileSync } from "fs";
+import {
+  loadConfig,
+  CONFIG_PATH,
+  CHATTER_DIR,
+  ensureChatterDir,
+  generateDefaultConfig,
+  expandPath,
+} from "./core/config.ts";
+import type { Config } from "./core/types.ts";
+
+const VERSION = "0.1.0";
+
+// Load configuration at startup
+const config: Config = loadConfig();
+
+const program = new Command();
+
+program
+  .name("speak")
+  .description("Convert text to speech using Chatterbox TTS")
+  .version(VERSION)
+  .argument("[input...]", "Text to convert or file paths")
+  .option("-c, --clipboard", "Read from system clipboard")
+  .option("-o, --output <dir>", "Output directory", config.output_dir)
+  .option("-m, --model <name>", "TTS model", config.model)
+  .option("-t, --temp <value>", "Temperature (0-1)", String(config.temperature))
+  .option("-s, --speed <value>", "Playback speed (0-2)", String(config.speed))
+  .option("-v, --voice <name>", "Voice preset or path to .wav", config.voice)
+  .option("--markdown <mode>", "Markdown mode: plain|smart", config.markdown_mode)
+  .option("--code-blocks <mode>", "Code handling: read|skip|placeholder", config.code_blocks)
+  .option("--play", "Play audio after generation")
+  .option("--stream", "Stream audio as it generates")
+  .option("--preview", "Generate first sentence only")
+  .option("--daemon", "Use persistent server for faster calls", config.daemon)
+  .option("--verbose", "Show detailed progress")
+  .option("--quiet", "Suppress all output except errors")
+  .action(async (input: string[], options) => {
+    const { initLogger, logger } = await import("./ui/logger.ts");
+    const { startDaemon, stopDaemon } = await import("./bridge/daemon.ts");
+    const { generate } = await import("./bridge/client.ts");
+    const { copyToOutput, playAudio, registerCleanupHandlers, stopAudio } = await import("./core/output.ts");
+    const { isVenvValid, runSetup } = await import("./python/setup.ts");
+    const { processMarkdown, isMarkdown, extractFirstSentence } = await import(
+      "./core/markdown.ts"
+    );
+
+    // Register cleanup handlers for Ctrl+C
+    registerCleanupHandlers(async () => {
+      if (!options.quiet) {
+        console.log(pc.dim("\n  Interrupted, cleaning up..."));
+      }
+      await stopDaemon();
+    });
+
+    initLogger({
+      logLevel: config.log_level,
+      quiet: options.quiet,
+      verbose: options.verbose,
+    });
+
+    // Auto-setup on first run
+    if (!isVenvValid()) {
+      if (!options.quiet) {
+        console.log(pc.cyan("First run detected - setting up Python environment...\n"));
+      }
+      const success = await runSetup({ showProgress: !options.quiet });
+      if (!success) {
+        console.log(pc.red("\nSetup failed. Please run 'speak setup' manually for details."));
+        process.exit(1);
+      }
+      if (!options.quiet) {
+        console.log(pc.green("\n✓ Setup complete!\n"));
+      }
+    }
+
+    // Get text input
+    let text = "";
+    let isMarkdownFile = false;
+    if (options.clipboard) {
+      // Read from clipboard
+      const { execSync } = await import("child_process");
+      try {
+        text = execSync("pbpaste", { encoding: "utf-8" });
+      } catch {
+        console.log(pc.red("Failed to read clipboard"));
+        process.exit(1);
+      }
+    } else if (input.length > 0) {
+      // Check if input is a file path or text
+      const fs = await import("fs");
+      if (input.length === 1 && fs.existsSync(input[0])) {
+        text = fs.readFileSync(input[0], "utf-8");
+        isMarkdownFile = input[0].endsWith(".md");
+      } else {
+        text = input.join(" ");
+      }
+    } else {
+      console.log(pc.yellow("No input provided. Use --help for usage."));
+      return;
+    }
+
+    if (!text.trim()) {
+      console.log(pc.yellow("Empty input. Nothing to generate."));
+      return;
+    }
+
+    // Process markdown if needed
+    const shouldProcessMarkdown = isMarkdownFile || isMarkdown(text);
+    if (shouldProcessMarkdown) {
+      const originalLength = text.length;
+      text = processMarkdown(text, {
+        mode: options.markdown as "plain" | "smart",
+        codeBlocks: options.codeBlocks as "read" | "skip" | "placeholder",
+      });
+      if (options.verbose && !options.quiet) {
+        console.log(
+          pc.dim(`Processed markdown: ${originalLength} → ${text.length} characters`)
+        );
+      }
+    }
+
+    // Preview mode: extract first sentence only
+    if (options.preview) {
+      text = extractFirstSentence(text);
+      if (!options.quiet) {
+        console.log(pc.dim(`Preview mode: "${text}"`));
+      }
+    }
+
+    if (!options.quiet) {
+      console.log(pc.cyan("speak") + " v" + VERSION);
+      console.log(pc.dim(`Generating audio for ${text.length} characters...`));
+    }
+
+    try {
+      // Start daemon
+      const started = await startDaemon();
+      if (!started) {
+        console.log(pc.red("Failed to start TTS server"));
+        process.exit(1);
+      }
+
+      // Streaming mode
+      if (options.stream) {
+        const { generateStream } = await import("./bridge/client.ts");
+
+        if (!options.quiet) {
+          console.log(pc.dim("Streaming audio with adaptive buffering..."));
+        }
+
+        // Buffer configuration
+        const INITIAL_BUFFER_SECONDS = 5.0;  // Wait for this much before starting
+        const MIN_BUFFER_SECONDS = 2.0;      // Pause if buffer drops below this
+        const REBUFFER_TARGET_SECONDS = 4.0; // When rebuffering, wait until this level
+
+        // Chunk queue for buffered playback
+        const chunkQueue: Array<{ path: string; duration: number; num: number }> = [];
+        let bufferedDuration = 0;
+        let playbackStarted = false;
+        let playbackPromise: Promise<void> | null = null;
+        let generationComplete = false;
+        let rebufferingCount = 0;
+
+        // Playback loop - runs independently of chunk reception
+        async function startPlayback() {
+          while (chunkQueue.length > 0 || !generationComplete) {
+            // Check if we need to rebuffer (buffer too low and generation ongoing)
+            if (!generationComplete && bufferedDuration < MIN_BUFFER_SECONDS && chunkQueue.length === 0) {
+              rebufferingCount++;
+              if (!options.quiet) {
+                process.stdout.write(
+                  `\r\x1b[K${pc.yellow(`  Rebuffering... (${bufferedDuration.toFixed(1)}s < ${MIN_BUFFER_SECONDS}s minimum)`)}`
+                );
+              }
+
+              // Wait until we have enough buffer again
+              while (!generationComplete && bufferedDuration < REBUFFER_TARGET_SECONDS) {
+                await new Promise((r) => setTimeout(r, 100));
+                if (!options.quiet) {
+                  process.stdout.write(
+                    `\r\x1b[K${pc.yellow(`  Rebuffering: ${bufferedDuration.toFixed(1)}s / ${REBUFFER_TARGET_SECONDS}s`)}`
+                  );
+                }
+              }
+
+              if (!options.quiet && bufferedDuration >= REBUFFER_TARGET_SECONDS) {
+                process.stdout.write(`\r\x1b[K${pc.dim(`  Resuming playback...`)}\n`);
+              }
+            }
+
+            if (chunkQueue.length > 0) {
+              const chunk = chunkQueue.shift()!;
+              bufferedDuration -= chunk.duration;
+
+              if (!options.quiet) {
+                const bufferStatus = bufferedDuration.toFixed(1);
+                const bufferColor = bufferedDuration < MIN_BUFFER_SECONDS ? pc.yellow : pc.green;
+                process.stdout.write(
+                  `\r\x1b[K${pc.dim(`  Playing chunk ${chunk.num} (${chunk.duration.toFixed(1)}s) | Buffer: `)}${bufferColor(bufferStatus + "s")}`
+                );
+              }
+
+              await playAudio(chunk.path);
+            } else if (!generationComplete) {
+              // Wait a bit for more chunks
+              await new Promise((r) => setTimeout(r, 50));
+            }
+          }
+        }
+
+        let result: Awaited<ReturnType<typeof generateStream>> | null = null;
+        let streamError: Error | null = null;
+
+        try {
+          result = await generateStream(
+            {
+              text,
+              model: options.model,
+              temperature: parseFloat(options.temp),
+              speed: parseFloat(options.speed),
+              voice: options.voice,
+              streaming_interval: 1.5, // Slightly larger chunks for more buffer stability
+            },
+            async (chunk) => {
+              // Add chunk to queue
+              chunkQueue.push({
+                path: chunk.audio_path,
+                duration: chunk.duration,
+                num: chunk.chunk,
+              });
+              bufferedDuration += chunk.duration;
+
+              if (!options.quiet && !playbackStarted) {
+                process.stdout.write(
+                  `\r\x1b[K${pc.dim(`  Buffering: ${bufferedDuration.toFixed(1)}s / ${INITIAL_BUFFER_SECONDS}s`)}`
+                );
+              }
+
+              // Start playback once we have enough initial buffer
+              if (!playbackStarted && bufferedDuration >= INITIAL_BUFFER_SECONDS) {
+                playbackStarted = true;
+                if (!options.quiet) {
+                  console.log(pc.dim(`\n  Buffer ready, starting playback...`));
+                }
+                playbackPromise = startPlayback();
+              }
+            }
+          );
+        } catch (err) {
+          streamError = err instanceof Error ? err : new Error(String(err));
+        } finally {
+          // Always set generationComplete to prevent playback loop from hanging
+          generationComplete = true;
+        }
+
+        // If playback never started (short text), start it now
+        if (!playbackStarted && chunkQueue.length > 0) {
+          playbackStarted = true;
+          if (!options.quiet) {
+            console.log(pc.dim(`\n  Starting playback...`));
+          }
+          playbackPromise = startPlayback();
+        }
+
+        // Wait for playback to finish
+        if (playbackPromise) {
+          await playbackPromise;
+        }
+
+        // Re-throw error after playback finishes (so user hears partial audio)
+        if (streamError) {
+          throw streamError;
+        }
+
+        if (!options.quiet && result) {
+          console.log(pc.green(`\n\n✓ Streamed ${result.total_chunks} chunks`));
+          console.log(pc.dim(`  Total: ${result.total_duration.toFixed(1)}s of audio`));
+          console.log(pc.dim(`  RTF: ${result.rtf.toFixed(2)}x`));
+          if (rebufferingCount > 0) {
+            console.log(pc.yellow(`  Rebuffered ${rebufferingCount} time(s)`));
+          }
+        }
+      } else {
+        // Non-streaming mode with progress spinner
+        const { createSpinner } = await import("./ui/progress.ts");
+
+        const spinner = createSpinner({
+          text,
+          showEta: !options.quiet && text.length > 100,
+          quiet: options.quiet,
+        });
+
+        spinner.start();
+
+        try {
+          const result = await generate({
+            text,
+            model: options.model,
+            temperature: parseFloat(options.temp),
+            speed: parseFloat(options.speed),
+            voice: options.voice,
+          });
+
+          spinner.stop(true);
+
+          // Copy to output directory
+          const outputPath = copyToOutput(result.audio_path, options.output);
+
+          if (!options.quiet) {
+            console.log(pc.green(`✓ Generated ${result.duration.toFixed(1)}s of audio`));
+            console.log(pc.dim(`  Output: ${outputPath}`));
+            console.log(pc.dim(`  RTF: ${result.rtf.toFixed(2)}x`));
+          }
+
+          // Play audio if requested
+          if (options.play) {
+            if (!options.quiet) {
+              console.log(pc.dim("  Playing..."));
+            }
+            await playAudio(outputPath);
+          }
+        } catch (error) {
+          spinner.stop(false);
+          throw error;
+        }
+      }
+
+      // Stop daemon if not in daemon mode
+      if (!options.daemon) {
+        await stopDaemon();
+      }
+
+      // Exit cleanly - don't leave event loop hanging
+      process.exit(0);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(pc.red(`Error: ${message}`));
+      process.exit(1);
+    }
+  });
+
+// Subcommand: setup
+program
+  .command("setup")
+  .description("Set up Python environment")
+  .option("--force", "Force reinstall even if environment exists")
+  .option("--quiet", "Hide installation progress")
+  .option("--health", "Only run health check, don't install")
+  .action(async (options) => {
+    const { runSetup, checkPython } = await import("./python/setup.ts");
+    const { printHealthStatus } = await import("./python/health.ts");
+    const { initLogger, logger } = await import("./ui/logger.ts");
+
+    initLogger({ logLevel: config.log_level });
+
+    if (options.health) {
+      const healthy = await printHealthStatus();
+      process.exit(healthy ? 0 : 1);
+    }
+
+    console.log(pc.cyan("Setting up Python environment for speak CLI...\n"));
+
+    const success = await runSetup({
+      force: options.force,
+      showProgress: !options.quiet,
+    });
+
+    if (success) {
+      console.log(pc.green("\n✓ Setup complete! You can now use speak to generate audio."));
+      console.log(pc.dim("  Example: speak \"Hello, world!\" --play"));
+    } else {
+      console.log(pc.red("\n✗ Setup failed. Check the errors above."));
+      process.exit(1);
+    }
+  });
+
+// Subcommand: models
+program
+  .command("models")
+  .description("List available TTS models")
+  .action(async () => {
+    console.log(pc.cyan("Available Chatterbox models:\n"));
+    const models = [
+      { name: "mlx-community/chatterbox-turbo-8bit", desc: "8-bit quantized, fastest, recommended" },
+      { name: "mlx-community/chatterbox-turbo-fp16", desc: "Full precision, highest quality" },
+      { name: "mlx-community/chatterbox-turbo-4bit", desc: "4-bit quantized, smallest memory" },
+      { name: "mlx-community/chatterbox-turbo-5bit", desc: "5-bit quantized" },
+      { name: "mlx-community/chatterbox-turbo-6bit", desc: "6-bit quantized" },
+    ];
+
+    for (const model of models) {
+      const isDefault = model.name === config.model;
+      const prefix = isDefault ? pc.green("* ") : "  ";
+      const suffix = isDefault ? pc.dim(" (current)") : "";
+      console.log(prefix + model.name + suffix);
+      console.log(pc.dim("    " + model.desc));
+    }
+  });
+
+// Subcommand: daemon
+const daemonCmd = program.command("daemon").description("Daemon management");
+
+daemonCmd
+  .command("kill")
+  .description("Stop running daemon")
+  .action(async () => {
+    const { stopDaemon } = await import("./bridge/daemon.ts");
+    const { initLogger } = await import("./ui/logger.ts");
+
+    initLogger({ logLevel: config.log_level });
+    await stopDaemon();
+  });
+
+// Subcommand: completions
+program
+  .command("completions <shell>")
+  .description("Generate shell completions (bash, zsh, fish)")
+  .option("--install", "Show installation instructions")
+  .action(async (shell, options) => {
+    const validShells = ["bash", "zsh", "fish"];
+    if (!validShells.includes(shell)) {
+      console.log(pc.red(`Invalid shell: ${shell}`));
+      console.log(pc.dim(`Supported shells: ${validShells.join(", ")}`));
+      process.exit(1);
+    }
+
+    const { getCompletions, getInstallInstructions } = await import(
+      "./utils/completions.ts"
+    );
+
+    if (options.install) {
+      console.log(pc.cyan(`Installation instructions for ${shell}:\n`));
+      console.log(getInstallInstructions(shell));
+    } else {
+      // Output completion script (for eval or redirect)
+      console.log(getCompletions(shell));
+    }
+  });
+
+// Subcommand: config
+program
+  .command("config")
+  .description("Show current configuration")
+  .option("--init", "Create default config file")
+  .action(async (options) => {
+    if (options.init) {
+      ensureChatterDir();
+      if (existsSync(CONFIG_PATH)) {
+        console.log(pc.yellow(`Config file already exists: ${CONFIG_PATH}`));
+        return;
+      }
+      writeFileSync(CONFIG_PATH, generateDefaultConfig());
+      console.log(pc.green(`Created config file: ${CONFIG_PATH}`));
+      return;
+    }
+
+    console.log(pc.cyan("Current Configuration:\n"));
+    console.log(pc.dim(`  Config file: ${CONFIG_PATH}`));
+    console.log(pc.dim(`  File exists: ${existsSync(CONFIG_PATH) ? "yes" : "no (using defaults)"}\n`));
+
+    console.log("  " + pc.bold("output_dir") + ": " + config.output_dir);
+    console.log("  " + pc.bold("model") + ": " + config.model);
+    console.log("  " + pc.bold("temperature") + ": " + config.temperature);
+    console.log("  " + pc.bold("speed") + ": " + config.speed);
+    console.log("  " + pc.bold("markdown_mode") + ": " + config.markdown_mode);
+    console.log("  " + pc.bold("code_blocks") + ": " + config.code_blocks);
+    console.log("  " + pc.bold("voice") + ": " + (config.voice || "(none)"));
+    console.log("  " + pc.bold("daemon") + ": " + config.daemon);
+    console.log("  " + pc.bold("log_level") + ": " + config.log_level);
+  });
+
+// Parse arguments
+program.parse();
+
+
+================================================================================
+
+FILE: src/core/config.ts
+
+================================================================================
+/**
+ * Configuration loading and management
+ *
+ * Loads config from ~/.chatter/config.toml with fallback to defaults.
+ * Environment variables override config file values.
+ */
+
+import { existsSync, readFileSync, mkdirSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
+import TOML from "@iarna/toml";
+import { ConfigSchema, DEFAULT_CONFIG, type Config } from "./types.ts";
+
+/**
+ * Base directory for speak configuration
+ */
+export const CHATTER_DIR = join(homedir(), ".chatter");
+
+/**
+ * Path to configuration file
+ */
+export const CONFIG_PATH = join(CHATTER_DIR, "config.toml");
+
+/**
+ * Path to logs directory
+ */
+export const LOGS_DIR = join(CHATTER_DIR, "logs");
+
+/**
+ * Path to voices directory
+ */
+export const VOICES_DIR = join(CHATTER_DIR, "voices");
+
+/**
+ * Path to Unix socket for IPC
+ */
+export const SOCKET_PATH = join(CHATTER_DIR, "speak.sock");
+
+/**
+ * Path to managed Python venv
+ */
+export const VENV_DIR = join(CHATTER_DIR, "env");
+
+/**
+ * Path to Python interpreter in venv
+ */
+export const VENV_PYTHON = join(VENV_DIR, "bin", "python3");
+
+/**
+ * Path to pip in venv
+ */
+export const VENV_PIP = join(VENV_DIR, "bin", "pip");
+
+/**
+ * Expand ~ to home directory in paths
+ */
+export function expandPath(path: string): string {
+  if (path.startsWith("~/")) {
+    return join(homedir(), path.slice(2));
+  }
+  return path;
+}
+
+/**
+ * Ensure the .chatter directory structure exists
+ */
+export function ensureChatterDir(): void {
+  if (!existsSync(CHATTER_DIR)) {
+    mkdirSync(CHATTER_DIR, { recursive: true });
+  }
+  if (!existsSync(LOGS_DIR)) {
+    mkdirSync(LOGS_DIR, { recursive: true });
+  }
+  if (!existsSync(VOICES_DIR)) {
+    mkdirSync(VOICES_DIR, { recursive: true });
+  }
+}
+
+/**
+ * Load configuration from TOML file
+ * Returns null if file doesn't exist
+ */
+function loadConfigFile(): Partial<Config> | null {
+  if (!existsSync(CONFIG_PATH)) {
+    return null;
+  }
+
+  try {
+    const content = readFileSync(CONFIG_PATH, "utf-8");
+    const parsed = TOML.parse(content);
+    return parsed as Partial<Config>;
+  } catch (error) {
+    console.error(`Warning: Failed to parse config file: ${error}`);
+    return null;
+  }
+}
+
+/**
+ * Load configuration from environment variables
+ * Uses SPEAK_ prefix (e.g., SPEAK_MODEL, SPEAK_TEMPERATURE)
+ */
+function loadEnvConfig(): Partial<Config> {
+  const env: Partial<Config> = {};
+
+  if (process.env.SPEAK_OUTPUT_DIR) {
+    env.output_dir = process.env.SPEAK_OUTPUT_DIR;
+  }
+  if (process.env.SPEAK_MODEL) {
+    env.model = process.env.SPEAK_MODEL;
+  }
+  if (process.env.SPEAK_TEMPERATURE) {
+    const temp = parseFloat(process.env.SPEAK_TEMPERATURE);
+    if (!isNaN(temp)) env.temperature = temp;
+  }
+  if (process.env.SPEAK_SPEED) {
+    const speed = parseFloat(process.env.SPEAK_SPEED);
+    if (!isNaN(speed)) env.speed = speed;
+  }
+  if (process.env.SPEAK_MARKDOWN_MODE) {
+    env.markdown_mode = process.env.SPEAK_MARKDOWN_MODE as Config["markdown_mode"];
+  }
+  if (process.env.SPEAK_VOICE) {
+    env.voice = process.env.SPEAK_VOICE;
+  }
+  if (process.env.SPEAK_DAEMON !== undefined) {
+    env.daemon = process.env.SPEAK_DAEMON === "true" || process.env.SPEAK_DAEMON === "1";
+  }
+  if (process.env.SPEAK_LOG_LEVEL) {
+    env.log_level = process.env.SPEAK_LOG_LEVEL as Config["log_level"];
+  }
+
+  return env;
+}
+
+/**
+ * Load and merge configuration from all sources
+ * Priority: CLI options > Environment > Config file > Defaults
+ */
+export function loadConfig(): Config {
+  // Start with defaults
+  let config = { ...DEFAULT_CONFIG };
+
+  // Layer 1: Config file (if exists)
+  const fileConfig = loadConfigFile();
+  if (fileConfig) {
+    config = { ...config, ...fileConfig };
+  }
+
+  // Layer 2: Environment variables
+  const envConfig = loadEnvConfig();
+  config = { ...config, ...envConfig };
+
+  // Validate and return
+  const result = ConfigSchema.safeParse(config);
+  if (!result.success) {
+    console.error("Warning: Invalid configuration values, using defaults");
+    console.error(result.error.issues.map(i => `  - ${i.path.join(".")}: ${i.message}`).join("\n"));
+    return DEFAULT_CONFIG;
+  }
+
+  return result.data;
+}
+
+/**
+ * Generate default config file content
+ */
+export function generateDefaultConfig(): string {
+  return `# speak CLI configuration
+# Location: ~/.chatter/config.toml
+
+# Default output directory
+output_dir = "~/Audio/speak"
+
+# Default model (chatterbox-turbo-8bit recommended for best performance)
+model = "mlx-community/chatterbox-turbo-8bit"
+
+# Default temperature (0-1)
+temperature = 0.5
+
+# Default speed (0-2)
+speed = 1.0
+
+# Markdown processing mode: "plain" or "smart"
+markdown_mode = "plain"
+
+# Code block handling: "read", "skip", or "placeholder"
+code_blocks = "read"
+
+# Default voice preset (optional)
+# voice = "narrator"
+
+# Enable daemon mode by default
+daemon = false
+
+# Check for updates (opt-in)
+update_check = false
+
+# Log level: "debug", "info", "warn", "error"
+log_level = "info"
+`;
+}
+
+
+================================================================================
+
+FILE: src/core/markdown.ts
+
+================================================================================
+/**
+ * Markdown processing for speak CLI
+ *
+ * Two modes:
+ * - plain: Strip markdown syntax to plain text
+ * - smart: Convert markdown with emotion tags for headers
+ */
+
+export type MarkdownMode = "plain" | "smart";
+export type CodeBlockMode = "read" | "skip" | "placeholder";
+
+export interface ProcessOptions {
+  mode: MarkdownMode;
+  codeBlocks: CodeBlockMode;
+}
+
+/**
+ * Process markdown text according to the specified options
+ */
+export function processMarkdown(
+  text: string,
+  options: ProcessOptions = { mode: "plain", codeBlocks: "read" }
+): string {
+  const { mode, codeBlocks } = options;
+
+  // Step 1: Handle code blocks first (before other processing)
+  let processed = handleCodeBlocks(text, codeBlocks);
+
+  // Step 2: Process headers based on mode
+  processed = processHeaders(processed, mode);
+
+  // Step 3: Strip remaining markdown syntax
+  processed = stripMarkdownSyntax(processed);
+
+  // Step 4: Clean up whitespace
+  processed = cleanWhitespace(processed);
+
+  return processed;
+}
+
+/**
+ * Handle fenced code blocks (```code```)
+ */
+function handleCodeBlocks(text: string, mode: CodeBlockMode): string {
+  // Match fenced code blocks with optional language identifier
+  const codeBlockRegex = /```[\w]*\n?([\s\S]*?)```/g;
+
+  switch (mode) {
+    case "skip":
+      return text.replace(codeBlockRegex, "");
+    case "placeholder":
+      return text.replace(codeBlockRegex, "[code block omitted]");
+    case "read":
+    default:
+      // Remove the fence markers but keep the code content
+      return text.replace(codeBlockRegex, (_match, code) => code.trim());
+  }
+}
+
+/**
+ * Process headers based on mode
+ * - plain: Strip # markers
+ * - smart: Add emotion tags before headers
+ */
+function processHeaders(text: string, mode: MarkdownMode): string {
+  // Match headers (# through ######)
+  const headerRegex = /^(#{1,6})\s+(.+)$/gm;
+
+  return text.replace(headerRegex, (_match, hashes, content) => {
+    const trimmedContent = content.trim();
+
+    if (mode === "smart") {
+      // Add [clear throat] before headers for emphasis
+      return `[clear throat] ${trimmedContent}`;
+    } else {
+      // Plain mode: just the content
+      return trimmedContent;
+    }
+  });
+}
+
+/**
+ * Strip common markdown syntax
+ */
+function stripMarkdownSyntax(text: string): string {
+  let result = text;
+
+  // Links: [text](url) → text
+  result = result.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+
+  // Images: ![alt](url) → (remove entirely or keep alt)
+  result = result.replace(/!\[([^\]]*)\]\([^)]+\)/g, "");
+
+  // Bold: **text** or __text__ → text
+  result = result.replace(/\*\*([^*]+)\*\*/g, "$1");
+  result = result.replace(/__([^_]+)__/g, "$1");
+
+  // Italic: *text* or _text_ → text
+  // Be careful not to match * in middle of words
+  result = result.replace(/(?<!\w)\*([^*]+)\*(?!\w)/g, "$1");
+  result = result.replace(/(?<!\w)_([^_]+)_(?!\w)/g, "$1");
+
+  // Strikethrough: ~~text~~ → text
+  result = result.replace(/~~([^~]+)~~/g, "$1");
+
+  // Inline code: `code` → code
+  result = result.replace(/`([^`]+)`/g, "$1");
+
+  // Blockquotes: > text → text
+  result = result.replace(/^>\s+/gm, "");
+
+  // Horizontal rules: ---, ***, ___ → (remove)
+  result = result.replace(/^[-*_]{3,}$/gm, "");
+
+  // Unordered lists: - item or * item → item
+  result = result.replace(/^[-*+]\s+/gm, "");
+
+  // Ordered lists: 1. item → item
+  result = result.replace(/^\d+\.\s+/gm, "");
+
+  // Task lists: - [ ] or - [x] → (remove checkbox)
+  result = result.replace(/^[-*+]\s+\[[ xX]\]\s+/gm, "");
+
+  // HTML tags: <tag> or </tag> → (remove)
+  result = result.replace(/<\/?[^>]+>/g, "");
+
+  // HTML entities: &nbsp; &amp; etc → space
+  result = result.replace(/&\w+;/g, " ");
+
+  // Reference-style links: [text][ref] → text
+  result = result.replace(/\[([^\]]+)\]\[[^\]]*\]/g, "$1");
+
+  // Link definitions: [ref]: url → (remove)
+  result = result.replace(/^\[[^\]]+\]:\s+.+$/gm, "");
+
+  return result;
+}
+
+/**
+ * Clean up whitespace for natural reading
+ */
+function cleanWhitespace(text: string): string {
+  let result = text;
+
+  // Replace multiple newlines with double newline (paragraph break)
+  result = result.replace(/\n{3,}/g, "\n\n");
+
+  // Replace multiple spaces with single space
+  result = result.replace(/[ \t]+/g, " ");
+
+  // Trim each line
+  result = result
+    .split("\n")
+    .map((line) => line.trim())
+    .join("\n");
+
+  // Remove leading/trailing whitespace
+  result = result.trim();
+
+  return result;
+}
+
+/**
+ * Detect if text appears to be markdown
+ */
+export function isMarkdown(text: string): boolean {
+  // Check for common markdown patterns
+  const patterns = [
+    /^#{1,6}\s+/m, // Headers
+    /\[.+\]\(.+\)/, // Links
+    /```[\s\S]+```/, // Code blocks
+    /^\s*[-*+]\s+/m, // Unordered lists
+    /^\s*\d+\.\s+/m, // Ordered lists
+    /\*\*[^*]+\*\*/, // Bold
+  ];
+
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+/**
+ * Extract first sentence for preview mode
+ */
+export function extractFirstSentence(text: string): string {
+  // First, get the first paragraph (up to double newline)
+  const firstPara = text.split(/\n\n/)[0].trim();
+
+  // Match sentence ending with . ! ? followed by space, newline, or end
+  const sentenceEndRegex = /^(.+?[.!?])(?:\s|$)/;
+  const match = firstPara.match(sentenceEndRegex);
+
+  if (match) {
+    return match[1].trim();
+  }
+
+  // If no sentence ending, use the first paragraph (likely a header)
+  if (firstPara.length <= 100) {
+    return firstPara;
+  }
+
+  // Fallback: first 100 characters
+  return firstPara.slice(0, 100).trim() + "...";
+}
+
+
+================================================================================
+
+FILE: src/core/output.ts
+
+================================================================================
+/**
+ * Output path handling for speak CLI
+ */
+
+import { existsSync, mkdirSync, copyFileSync } from "fs";
+import { join, basename } from "path";
+import { expandPath } from "./config.ts";
+import type { ChildProcess } from "child_process";
+
+/**
+ * Generate output filename with timestamp
+ * Format: speak_YYYY-MM-DD_HHMMSS.wav
+ */
+export function generateFilename(): string {
+  const now = new Date();
+  const date = now.toISOString().split("T")[0]; // YYYY-MM-DD
+  const time = now.toTimeString().split(" ")[0].replace(/:/g, ""); // HHMMSS
+  return `speak_${date}_${time}.wav`;
+}
+
+/**
+ * Ensure output directory exists and return full output path
+ */
+export function prepareOutputPath(outputDir: string): string {
+  const expandedDir = expandPath(outputDir);
+
+  if (!existsSync(expandedDir)) {
+    mkdirSync(expandedDir, { recursive: true });
+  }
+
+  const filename = generateFilename();
+  return join(expandedDir, filename);
+}
+
+/**
+ * Copy audio file from temp location to output path
+ */
+export function copyToOutput(tempPath: string, outputDir: string): string {
+  const outputPath = prepareOutputPath(outputDir);
+  copyFileSync(tempPath, outputPath);
+  return outputPath;
+}
+
+// Track current audio player process for cleanup
+let currentPlayer: ChildProcess | null = null;
+
+/**
+ * Kill any running audio playback
+ */
+export function stopAudio(): void {
+  if (currentPlayer) {
+    currentPlayer.kill("SIGTERM");
+    currentPlayer = null;
+  }
+}
+
+/**
+ * Play audio file using afplay (macOS)
+ */
+export async function playAudio(path: string): Promise<void> {
+  const { spawn } = await import("child_process");
+
+  return new Promise((resolve, reject) => {
+    const player = spawn("afplay", [path]);
+    currentPlayer = player;
+
+    player.on("close", (code) => {
+      currentPlayer = null;
+      if (code === 0 || code === null) {
+        resolve();
+      } else {
+        reject(new Error(`afplay exited with code ${code}`));
+      }
+    });
+
+    player.on("error", (err) => {
+      currentPlayer = null;
+      reject(err);
+    });
+  });
+}
+
+// Track if cleanup handlers are registered
+let cleanupRegistered = false;
+let cleanupCallback: (() => Promise<void>) | undefined;
+
+/**
+ * Register cleanup handlers for graceful shutdown
+ */
+export function registerCleanupHandlers(onCleanup?: () => Promise<void>): void {
+  if (cleanupRegistered) return;
+  cleanupRegistered = true;
+  cleanupCallback = onCleanup;
+
+  const cleanup = async () => {
+    stopAudio();
+    if (cleanupCallback) {
+      await cleanupCallback();
+    }
+    process.exit(0);
+  };
+
+  // Use 'once' so handlers auto-remove after firing
+  process.once("SIGINT", cleanup);
+  process.once("SIGTERM", cleanup);
+}
+
+/**
+ * Remove cleanup handlers to allow process to exit naturally
+ */
+export function removeCleanupHandlers(): void {
+  cleanupRegistered = false;
+  cleanupCallback = undefined;
+  // Note: 'once' handlers are auto-removed, but we clear our state
+}
+
+
+================================================================================
+
+FILE: src/core/types.ts
+
+================================================================================
+/**
+ * Core types and schemas for speak CLI
+ */
+
+import { z } from "zod";
+
+/**
+ * Markdown processing modes
+ */
+export const MarkdownMode = z.enum(["plain", "smart"]);
+export type MarkdownMode = z.infer<typeof MarkdownMode>;
+
+/**
+ * Code block handling modes
+ */
+export const CodeBlockMode = z.enum(["read", "skip", "placeholder"]);
+export type CodeBlockMode = z.infer<typeof CodeBlockMode>;
+
+/**
+ * Log levels
+ */
+export const LogLevel = z.enum(["debug", "info", "warn", "error"]);
+export type LogLevel = z.infer<typeof LogLevel>;
+
+/**
+ * Configuration schema matching plan.md Section 5
+ */
+export const ConfigSchema = z.object({
+  // Output
+  output_dir: z.string().default("~/Audio/speak"),
+
+  // Model settings
+  model: z.string().default("mlx-community/chatterbox-turbo-8bit"),
+  temperature: z.number().min(0).max(1).default(0.5),
+  speed: z.number().min(0).max(2).default(1.0),
+
+  // Processing
+  markdown_mode: MarkdownMode.default("plain"),
+  code_blocks: CodeBlockMode.default("read"),
+
+  // Voice
+  voice: z.string().optional(),
+
+  // Behavior
+  daemon: z.boolean().default(false),
+  update_check: z.boolean().default(false),
+
+  // Logging
+  log_level: LogLevel.default("info"),
+});
+
+export type Config = z.infer<typeof ConfigSchema>;
+
+/**
+ * Default configuration values
+ */
+export const DEFAULT_CONFIG: Config = ConfigSchema.parse({});
+
+/**
+ * CLI options that can override config
+ */
+export interface CliOptions {
+  clipboard?: boolean;
+  output?: string;
+  model?: string;
+  temp?: string;
+  speed?: string;
+  voice?: string;
+  markdown?: string;
+  codeBlocks?: string;
+  play?: boolean;
+  stream?: boolean;
+  preview?: boolean;
+  daemon?: boolean;
+  verbose?: boolean;
+  quiet?: boolean;
+}
+
+/**
+ * Resolved options (config + CLI merged)
+ */
+export interface ResolvedOptions {
+  config: Config;
+  cli: CliOptions;
+  input: string[];
+}
+
+
+================================================================================
+
+FILE: src/bridge/client.ts
+
+================================================================================
+/**
+ * IPC client for communicating with Python TTS server
+ */
+
+import { connect } from "net";
+import { SOCKET_PATH } from "../core/config.ts";
+import {
+  type Request,
+  type Response,
+  type GenerateParams,
+  type GenerateResult,
+  type HealthResult,
+  type ListModelsResult,
+  type ShutdownResult,
+  isErrorResponse,
+  generateId,
+} from "./protocol.ts";
+import { logger } from "../ui/logger.ts";
+
+/**
+ * Default timeout for requests (5 minutes for TTS generation)
+ */
+const DEFAULT_TIMEOUT = 5 * 60 * 1000;
+
+/**
+ * Connection timeout (5 seconds)
+ */
+const CONNECT_TIMEOUT = 5000;
+
+/**
+ * Send a request to the server and wait for response
+ */
+export async function sendRequest<T>(
+  method: string,
+  params?: Record<string, unknown>,
+  timeout: number = DEFAULT_TIMEOUT
+): Promise<T> {
+  const requestId = generateId();
+  const request: Request = { id: requestId, method, params };
+
+  return new Promise((resolve, reject) => {
+    let responseBuffer = "";
+    let timeoutId: Timer | null = null;
+    let connectTimeoutId: Timer | null = null;
+
+    const socket = connect({ path: SOCKET_PATH });
+
+    // Connection timeout
+    connectTimeoutId = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("Connection timeout - server not running?"));
+    }, CONNECT_TIMEOUT);
+
+    socket.on("connect", () => {
+      if (connectTimeoutId) clearTimeout(connectTimeoutId);
+
+      // Request timeout
+      timeoutId = setTimeout(() => {
+        socket.destroy();
+        reject(new Error(`Request timeout after ${timeout}ms`));
+      }, timeout);
+
+      // Send request
+      const requestLine = JSON.stringify(request) + "\n";
+      socket.write(requestLine);
+    });
+
+    socket.on("data", (data) => {
+      responseBuffer += data.toString();
+
+      // Check for complete response (ends with newline)
+      if (responseBuffer.includes("\n")) {
+        const lines = responseBuffer.split("\n");
+        for (const line of lines) {
+          if (!line.trim()) continue;
+
+          try {
+            const response = JSON.parse(line) as Response<T>;
+
+            // Check if this is our response
+            if (response.id === requestId) {
+              if (timeoutId) clearTimeout(timeoutId);
+              socket.end();
+
+              if (isErrorResponse(response)) {
+                reject(new Error(response.error.message));
+              } else {
+                resolve(response.result);
+              }
+              return;
+            }
+          } catch (e) {
+            // Ignore parse errors for incomplete lines
+          }
+        }
+      }
+    });
+
+    socket.on("error", (err) => {
+      if (connectTimeoutId) clearTimeout(connectTimeoutId);
+      if (timeoutId) clearTimeout(timeoutId);
+
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        reject(new Error("Server not running - socket not found"));
+      } else if ((err as NodeJS.ErrnoException).code === "ECONNREFUSED") {
+        reject(new Error("Server not running - connection refused"));
+      } else {
+        reject(err);
+      }
+    });
+
+    socket.on("close", (hadError) => {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (hadError) {
+        reject(new Error("Socket closed with error"));
+      }
+    });
+  });
+}
+
+/**
+ * Check if server is healthy
+ */
+export async function checkHealth(): Promise<HealthResult> {
+  return sendRequest<HealthResult>("health", {}, 5000);
+}
+
+/**
+ * List available models
+ */
+export async function listModels(): Promise<ListModelsResult> {
+  return sendRequest<ListModelsResult>("list-models", {}, 5000);
+}
+
+/**
+ * Generate TTS audio
+ */
+export async function generate(params: GenerateParams): Promise<GenerateResult> {
+  return sendRequest<GenerateResult>("generate", params);
+}
+
+/**
+ * Streaming chunk response
+ */
+export interface StreamChunk {
+  id: string;
+  chunk: number;
+  audio_path: string;
+  duration: number;
+  sample_rate: number;
+}
+
+/**
+ * Streaming completion response
+ */
+export interface StreamComplete {
+  id: string;
+  complete: true;
+  total_chunks: number;
+  total_duration: number;
+  rtf: number;
+}
+
+/**
+ * Generate TTS audio with streaming - calls onChunk for each audio chunk
+ */
+export async function generateStream(
+  params: GenerateParams & { streaming_interval?: number },
+  onChunk: (chunk: StreamChunk) => Promise<void>
+): Promise<StreamComplete> {
+  const requestId = generateId();
+  const request: Request = {
+    id: requestId,
+    method: "generate",
+    params: { ...params, stream: true },
+  };
+
+  return new Promise((resolve, reject) => {
+    let responseBuffer = "";
+    let timeoutId: Timer | null = null;
+    let connectTimeoutId: Timer | null = null;
+    let completed = false; // Track if we received the complete message
+    // Longer timeout for streaming (10 minutes)
+    const timeout = 10 * 60 * 1000;
+
+    const socket = connect({ path: SOCKET_PATH });
+
+    connectTimeoutId = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("Connection timeout - server not running?"));
+    }, CONNECT_TIMEOUT);
+
+    socket.on("connect", () => {
+      if (connectTimeoutId) clearTimeout(connectTimeoutId);
+
+      timeoutId = setTimeout(() => {
+        socket.destroy();
+        reject(new Error(`Streaming timeout after ${timeout}ms`));
+      }, timeout);
+
+      const requestLine = JSON.stringify(request) + "\n";
+      socket.write(requestLine);
+    });
+
+    socket.on("data", async (data) => {
+      responseBuffer += data.toString();
+
+      // Process all complete lines
+      while (responseBuffer.includes("\n")) {
+        const newlineIndex = responseBuffer.indexOf("\n");
+        const line = responseBuffer.slice(0, newlineIndex).trim();
+        responseBuffer = responseBuffer.slice(newlineIndex + 1);
+
+        if (!line) continue;
+
+        try {
+          const response = JSON.parse(line);
+
+          if (response.id !== requestId) continue;
+
+          // Check for error
+          if (response.error) {
+            if (timeoutId) clearTimeout(timeoutId);
+            socket.end();
+            reject(new Error(response.error.message));
+            return;
+          }
+
+          // Check for chunk
+          if (response.chunk !== undefined) {
+            // Reset timeout on each chunk
+            if (timeoutId) clearTimeout(timeoutId);
+            timeoutId = setTimeout(() => {
+              socket.destroy();
+              reject(new Error("Streaming timeout between chunks"));
+            }, 60000); // 1 minute between chunks
+
+            await onChunk(response as StreamChunk);
+          }
+
+          // Check for completion
+          if (response.complete) {
+            completed = true;
+            if (timeoutId) clearTimeout(timeoutId);
+            socket.end();
+            resolve(response as StreamComplete);
+            return;
+          }
+        } catch (e) {
+          // Ignore parse errors for incomplete data
+        }
+      }
+    });
+
+    socket.on("error", (err) => {
+      if (connectTimeoutId) clearTimeout(connectTimeoutId);
+      if (timeoutId) clearTimeout(timeoutId);
+
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        reject(new Error("Server not running - socket not found"));
+      } else if ((err as NodeJS.ErrnoException).code === "ECONNREFUSED") {
+        reject(new Error("Server not running - connection refused"));
+      } else {
+        reject(err);
+      }
+    });
+
+    socket.on("close", (hadError) => {
+      if (timeoutId) clearTimeout(timeoutId);
+      // If socket closes before we got a complete message, reject to prevent hanging
+      if (!completed) {
+        reject(new Error(hadError
+          ? "Socket closed with error before streaming completed"
+          : "Socket closed before receiving completion message"));
+      }
+    });
+  });
+}
+
+/**
+ * Shutdown the server
+ */
+export async function shutdown(): Promise<ShutdownResult> {
+  return sendRequest<ShutdownResult>("shutdown", {}, 5000);
+}
+
+/**
+ * Check if server is running
+ */
+export async function isServerRunning(): Promise<boolean> {
+  try {
+    await checkHealth();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+
+================================================================================
+
+FILE: src/bridge/daemon.ts
+
+================================================================================
+/**
+ * Daemon management for Python TTS server
+ */
+
+import { spawn, type ChildProcess } from "child_process";
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from "fs";
+import { join } from "path";
+import { CHATTER_DIR, SOCKET_PATH, VENV_PYTHON } from "../core/config.ts";
+import { isServerRunning, shutdown } from "./client.ts";
+import { logger } from "../ui/logger.ts";
+
+/**
+ * Path to PID file
+ */
+const PID_FILE = join(CHATTER_DIR, "speak.pid");
+
+/**
+ * Path to Python server script
+ */
+const SERVER_SCRIPT = join(import.meta.dir, "../python/server.py");
+
+/**
+ * Get the PID of running daemon (if any)
+ */
+export function getDaemonPid(): number | null {
+  if (!existsSync(PID_FILE)) {
+    return null;
+  }
+
+  try {
+    const pid = parseInt(readFileSync(PID_FILE, "utf-8").trim(), 10);
+    if (isNaN(pid)) return null;
+
+    // Check if process is actually running
+    try {
+      process.kill(pid, 0);
+      return pid;
+    } catch {
+      // Process not running, clean up stale PID file
+      unlinkSync(PID_FILE);
+      return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Start the Python server as a daemon
+ */
+export async function startDaemon(): Promise<boolean> {
+  // Check if already running
+  if (await isServerRunning()) {
+    logger.debug("Server already running");
+    return true;
+  }
+
+  // Check PID file
+  const existingPid = getDaemonPid();
+  if (existingPid) {
+    logger.debug(`Found existing PID ${existingPid}, but server not responding`);
+    try {
+      process.kill(existingPid, "SIGTERM");
+    } catch {
+      // Ignore errors killing stale process
+    }
+  }
+
+  // Clean up stale socket
+  if (existsSync(SOCKET_PATH)) {
+    unlinkSync(SOCKET_PATH);
+  }
+
+  logger.status("Starting TTS server...");
+
+  return new Promise((resolve) => {
+    const serverProcess = spawn(VENV_PYTHON, [SERVER_SCRIPT], {
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    // Save PID
+    if (serverProcess.pid) {
+      writeFileSync(PID_FILE, String(serverProcess.pid));
+    }
+
+    let started = false;
+    let stdout = "";
+
+    const detachProcess = () => {
+      // Remove all listeners so they don't keep the event loop alive
+      serverProcess.stdout?.removeAllListeners();
+      serverProcess.stderr?.removeAllListeners();
+      serverProcess.removeAllListeners();
+
+      // Unref the streams and process so they don't keep event loop alive
+      // Note: Don't destroy() the pipes - that sends SIGPIPE to the Python process
+      if (serverProcess.stdout && "unref" in serverProcess.stdout) {
+        (serverProcess.stdout as any).unref?.();
+      }
+      if (serverProcess.stderr && "unref" in serverProcess.stderr) {
+        (serverProcess.stderr as any).unref?.();
+      }
+      serverProcess.unref();
+    };
+
+    serverProcess.stdout?.on("data", (data) => {
+      stdout += data.toString();
+
+      // Check for ready message
+      if (stdout.includes('"status": "ready"') && !started) {
+        started = true;
+        detachProcess();
+        logger.success("TTS server started");
+        resolve(true);
+      }
+    });
+
+    serverProcess.stderr?.on("data", (data) => {
+      // Log server stderr (debug level)
+      const lines = data.toString().split("\n");
+      for (const line of lines) {
+        if (line.trim()) {
+          try {
+            const entry = JSON.parse(line);
+            logger.debug(`[server] ${entry.message}`);
+          } catch {
+            logger.debug(`[server] ${line}`);
+          }
+        }
+      }
+    });
+
+    serverProcess.on("error", (err) => {
+      logger.error(`Failed to start server: ${err.message}`);
+      resolve(false);
+    });
+
+    serverProcess.on("exit", (code) => {
+      if (!started) {
+        logger.error(`Server exited with code ${code}`);
+        resolve(false);
+      }
+    });
+
+    // Timeout after 30 seconds
+    setTimeout(() => {
+      if (!started) {
+        logger.error("Server start timeout");
+        serverProcess.kill();
+        resolve(false);
+      }
+    }, 30000);
+  });
+}
+
+/**
+ * Stop the daemon
+ */
+export async function stopDaemon(): Promise<boolean> {
+  // Try graceful shutdown first
+  try {
+    if (await isServerRunning()) {
+      logger.status("Sending shutdown command...");
+      await shutdown();
+
+      // Wait for server to stop
+      for (let i = 0; i < 10; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        if (!(await isServerRunning())) {
+          logger.success("Server stopped gracefully");
+          cleanupPidFile();
+          return true;
+        }
+      }
+    }
+  } catch {
+    // Graceful shutdown failed, try SIGTERM
+  }
+
+  // Try SIGTERM
+  const pid = getDaemonPid();
+  if (pid) {
+    logger.status(`Sending SIGTERM to PID ${pid}...`);
+    try {
+      process.kill(pid, "SIGTERM");
+
+      // Wait for process to exit
+      for (let i = 0; i < 10; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        try {
+          process.kill(pid, 0);
+        } catch {
+          // Process exited
+          logger.success("Server stopped");
+          cleanupPidFile();
+          return true;
+        }
+      }
+
+      // Force kill
+      logger.warn("Server not responding, sending SIGKILL...");
+      process.kill(pid, "SIGKILL");
+      cleanupPidFile();
+      return true;
+    } catch {
+      // Process not running
+      cleanupPidFile();
+      return true;
+    }
+  }
+
+  logger.info("Server not running");
+  cleanupPidFile();
+  return true;
+}
+
+/**
+ * Clean up PID file and socket
+ */
+function cleanupPidFile(): void {
+  if (existsSync(PID_FILE)) {
+    unlinkSync(PID_FILE);
+  }
+  if (existsSync(SOCKET_PATH)) {
+    unlinkSync(SOCKET_PATH);
+  }
+}
+
+/**
+ * Ensure daemon is running (start if needed)
+ */
+export async function ensureDaemon(): Promise<boolean> {
+  if (await isServerRunning()) {
+    return true;
+  }
+  return startDaemon();
+}
+
+
+================================================================================
+
+FILE: src/bridge/protocol.ts
+
+================================================================================
+/**
+ * Protocol definitions for IPC with Python server
+ */
+
+/**
+ * Request message format
+ */
+export interface Request {
+  id: string;
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+/**
+ * Successful response
+ */
+export interface SuccessResponse<T = unknown> {
+  id: string;
+  result: T;
+}
+
+/**
+ * Error response
+ */
+export interface ErrorResponse {
+  id: string;
+  error: {
+    code: number;
+    message: string;
+  };
+}
+
+/**
+ * Any response
+ */
+export type Response<T = unknown> = SuccessResponse<T> | ErrorResponse;
+
+/**
+ * Check if response is an error
+ */
+export function isErrorResponse(response: Response): response is ErrorResponse {
+  return "error" in response;
+}
+
+/**
+ * Health check result
+ */
+export interface HealthResult {
+  status: string;
+  mlx_audio_version: string;
+  model_loaded: string | null;
+}
+
+/**
+ * Model info
+ */
+export interface ModelInfo {
+  name: string;
+  description: string;
+}
+
+/**
+ * List models result
+ */
+export interface ListModelsResult {
+  models: ModelInfo[];
+}
+
+/**
+ * Generate params
+ */
+export interface GenerateParams {
+  text: string;
+  model?: string;
+  temperature?: number;
+  speed?: number;
+  voice?: string;
+}
+
+/**
+ * Generate result
+ */
+export interface GenerateResult {
+  audio_path: string;
+  duration: number;
+  rtf: number;
+  sample_rate: number;
+}
+
+/**
+ * Shutdown result
+ */
+export interface ShutdownResult {
+  status: string;
+}
+
+/**
+ * Generate a unique request ID
+ */
+export function generateId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+
+================================================================================
+
+FILE: src/python/health.ts
+
+================================================================================
+/**
+ * Health check utilities for Python environment
+ */
+
+import { spawn } from "child_process";
+import { VENV_PYTHON, isVenvValid, getPackageVersions, REQUIRED_PACKAGES } from "./setup.ts";
+import { logger } from "../ui/logger.ts";
+
+/**
+ * Health check result
+ */
+export interface HealthCheckResult {
+  healthy: boolean;
+  venvExists: boolean;
+  pythonWorks: boolean;
+  mlxAudioImports: boolean;
+  mlxAudioVersion?: string;
+  missingPackages: string[];
+  errors: string[];
+}
+
+/**
+ * Run Python code and return result
+ */
+async function runPython(code: string): Promise<{ success: boolean; output: string; error: string }> {
+  return new Promise((resolve) => {
+    const proc = spawn(VENV_PYTHON, ["-c", code]);
+    let stdout = "";
+    let stderr = "";
+
+    proc.stdout.on("data", (data) => (stdout += data.toString()));
+    proc.stderr.on("data", (data) => (stderr += data.toString()));
+
+    proc.on("close", (exitCode) => {
+      resolve({
+        success: exitCode === 0,
+        output: stdout.trim(),
+        error: stderr.trim(),
+      });
+    });
+
+    proc.on("error", () => {
+      resolve({ success: false, output: "", error: "Failed to run Python" });
+    });
+  });
+}
+
+/**
+ * Run comprehensive health check
+ */
+export async function runHealthCheck(): Promise<HealthCheckResult> {
+  const result: HealthCheckResult = {
+    healthy: false,
+    venvExists: false,
+    pythonWorks: false,
+    mlxAudioImports: false,
+    missingPackages: [],
+    errors: [],
+  };
+
+  // Check venv exists
+  result.venvExists = isVenvValid();
+  if (!result.venvExists) {
+    result.errors.push("Virtual environment not found at ~/.chatter/env/");
+    return result;
+  }
+
+  // Check Python works
+  const pythonCheck = await runPython('print("ok")');
+  result.pythonWorks = pythonCheck.success && pythonCheck.output === "ok";
+  if (!result.pythonWorks) {
+    result.errors.push("Python is not working: " + pythonCheck.error);
+    return result;
+  }
+
+  // Check mlx-audio imports
+  const mlxCheck = await runPython(`
+import mlx_audio.tts
+from importlib.metadata import version
+print(version('mlx-audio'))
+`);
+  result.mlxAudioImports = mlxCheck.success;
+  if (mlxCheck.success) {
+    result.mlxAudioVersion = mlxCheck.output;
+  } else {
+    result.errors.push("Failed to import mlx_audio: " + mlxCheck.error);
+  }
+
+  // Check for missing packages
+  const versions = await getPackageVersions();
+  for (const pkg of REQUIRED_PACKAGES) {
+    const normalizedName = pkg.toLowerCase().replace(/-/g, "_");
+    const altName = pkg.toLowerCase();
+    if (!versions[normalizedName] && !versions[altName]) {
+      result.missingPackages.push(pkg);
+    }
+  }
+
+  if (result.missingPackages.length > 0) {
+    result.errors.push("Missing packages: " + result.missingPackages.join(", "));
+  }
+
+  // Overall health
+  result.healthy =
+    result.venvExists &&
+    result.pythonWorks &&
+    result.mlxAudioImports &&
+    result.missingPackages.length === 0;
+
+  return result;
+}
+
+/**
+ * Print health check status
+ */
+export async function printHealthStatus(): Promise<boolean> {
+  logger.status("Running health check...");
+  const health = await runHealthCheck();
+
+  if (health.healthy) {
+    logger.success("Python environment is healthy");
+    logger.info(`  mlx-audio version: ${health.mlxAudioVersion}`);
+    return true;
+  }
+
+  logger.error("Python environment has issues:");
+  for (const error of health.errors) {
+    logger.error("  - " + error);
+  }
+
+  if (!health.venvExists) {
+    logger.info("Run 'speak setup' to create the Python environment");
+  } else if (health.missingPackages.length > 0) {
+    logger.info("Run 'speak setup --force' to reinstall packages");
+  }
+
+  return false;
+}
+
+
+================================================================================
+
+FILE: src/python/setup.ts
+
+================================================================================
+/**
+ * Python environment setup for speak CLI
+ *
+ * Creates and manages a Python virtual environment with mlx-audio
+ * in ~/.chatter/env/
+ */
+
+import { existsSync, rmSync } from "fs";
+import { spawn } from "child_process";
+import { VENV_DIR, VENV_PYTHON, VENV_PIP, ensureChatterDir } from "../core/config.ts";
+import { logger } from "../ui/logger.ts";
+
+/**
+ * Required Python packages
+ */
+export const REQUIRED_PACKAGES = [
+  "mlx-audio",
+  "mlx-lm",
+  "scipy",
+  "sounddevice",
+  "librosa",
+  "einops",
+];
+
+// Re-export for convenience
+export { VENV_PYTHON, VENV_PIP };
+
+/**
+ * Run a command and return stdout/stderr
+ */
+async function runCommand(
+  command: string,
+  args: string[],
+  options?: { showOutput?: boolean; cwd?: string }
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  return new Promise((resolve) => {
+    const proc = spawn(command, args, {
+      cwd: options?.cwd,
+      stdio: options?.showOutput ? "inherit" : "pipe",
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    if (!options?.showOutput) {
+      proc.stdout?.on("data", (data) => (stdout += data.toString()));
+      proc.stderr?.on("data", (data) => (stderr += data.toString()));
+    }
+
+    proc.on("close", (exitCode) => {
+      resolve({ stdout, stderr, exitCode: exitCode ?? 1 });
+    });
+
+    proc.on("error", (error) => {
+      resolve({ stdout, stderr: error.message, exitCode: 1 });
+    });
+  });
+}
+
+/**
+ * Check if Python 3 is available
+ */
+export async function checkPython(): Promise<{ available: boolean; version?: string; path?: string }> {
+  const result = await runCommand("python3", ["--version"]);
+  if (result.exitCode !== 0) {
+    return { available: false };
+  }
+
+  const version = result.stdout.trim() || result.stderr.trim(); // Some Python versions output to stderr
+  const pathResult = await runCommand("which", ["python3"]);
+
+  return {
+    available: true,
+    version: version.replace("Python ", ""),
+    path: pathResult.stdout.trim(),
+  };
+}
+
+/**
+ * Check if venv exists and is valid
+ */
+export function isVenvValid(): boolean {
+  return existsSync(VENV_PYTHON) && existsSync(VENV_PIP);
+}
+
+/**
+ * Create Python virtual environment
+ */
+export async function createVenv(force: boolean = false): Promise<boolean> {
+  // Check if already exists
+  if (isVenvValid() && !force) {
+    logger.info("Virtual environment already exists at " + VENV_DIR);
+    return true;
+  }
+
+  // Remove existing if force
+  if (existsSync(VENV_DIR) && force) {
+    logger.status("Removing existing virtual environment...");
+    rmSync(VENV_DIR, { recursive: true });
+  }
+
+  // Ensure parent directory exists
+  ensureChatterDir();
+
+  // Create venv
+  logger.status("Creating virtual environment...");
+  const result = await runCommand("python3", ["-m", "venv", VENV_DIR]);
+
+  if (result.exitCode !== 0) {
+    logger.error("Failed to create virtual environment", { stderr: result.stderr });
+    return false;
+  }
+
+  logger.success("Created virtual environment at " + VENV_DIR);
+  return true;
+}
+
+/**
+ * Install required packages
+ */
+export async function installPackages(showProgress: boolean = true): Promise<boolean> {
+  if (!isVenvValid()) {
+    logger.error("Virtual environment not found. Run 'speak setup' first.");
+    return false;
+  }
+
+  // Upgrade pip first
+  logger.status("Upgrading pip...");
+  const pipUpgrade = await runCommand(VENV_PIP, ["install", "--upgrade", "pip"], {
+    showOutput: showProgress,
+  });
+  if (pipUpgrade.exitCode !== 0) {
+    logger.warn("Failed to upgrade pip, continuing anyway...");
+  }
+
+  // Install packages
+  logger.status("Installing packages: " + REQUIRED_PACKAGES.join(", "));
+  const result = await runCommand(VENV_PIP, ["install", ...REQUIRED_PACKAGES], {
+    showOutput: showProgress,
+  });
+
+  if (result.exitCode !== 0) {
+    logger.error("Failed to install packages");
+    if (!showProgress) {
+      logger.error("Error output:", { stderr: result.stderr });
+    }
+    return false;
+  }
+
+  logger.success("All packages installed successfully");
+  return true;
+}
+
+/**
+ * Get installed package versions
+ */
+export async function getPackageVersions(): Promise<Record<string, string>> {
+  if (!isVenvValid()) {
+    return {};
+  }
+
+  const result = await runCommand(VENV_PIP, ["list", "--format=json"]);
+  if (result.exitCode !== 0) {
+    return {};
+  }
+
+  try {
+    const packages = JSON.parse(result.stdout) as Array<{ name: string; version: string }>;
+    const versions: Record<string, string> = {};
+    for (const pkg of packages) {
+      versions[pkg.name.toLowerCase()] = pkg.version;
+    }
+    return versions;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Run full setup (create venv + install packages)
+ */
+export async function runSetup(options: { force?: boolean; showProgress?: boolean } = {}): Promise<boolean> {
+  const { force = false, showProgress = true } = options;
+
+  // Check Python
+  const python = await checkPython();
+  if (!python.available) {
+    logger.error("Python 3 not found. Please install Python 3.10+ to continue.");
+    return false;
+  }
+  logger.info(`Found Python ${python.version} at ${python.path}`);
+
+  // Create venv
+  const venvCreated = await createVenv(force);
+  if (!venvCreated) {
+    return false;
+  }
+
+  // Install packages
+  const packagesInstalled = await installPackages(showProgress);
+  if (!packagesInstalled) {
+    return false;
+  }
+
+  // Verify installation
+  logger.status("Verifying installation...");
+  const versions = await getPackageVersions();
+  const mlxAudio = versions["mlx-audio"];
+  if (mlxAudio) {
+    logger.success(`mlx-audio ${mlxAudio} installed successfully`);
+  } else {
+    logger.warn("Could not verify mlx-audio installation");
+  }
+
+  return true;
+}
+
+
+================================================================================
+
+FILE: src/ui/logger.ts
+
+================================================================================
+/**
+ * Logging infrastructure for speak CLI
+ *
+ * - File logging to ~/.chatter/logs/ (always at debug level)
+ * - Console logging (respects config log_level)
+ * - Structured JSON format for files
+ * - Human-readable format for console
+ */
+
+import { appendFileSync, existsSync, mkdirSync } from "fs";
+import { join } from "path";
+import pc from "picocolors";
+import { LOGS_DIR, ensureChatterDir } from "../core/config.ts";
+import type { LogLevel } from "../core/types.ts";
+
+/**
+ * Log level priority (lower = more verbose)
+ */
+const LOG_LEVELS: Record<LogLevel, number> = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3,
+};
+
+/**
+ * Logger state
+ */
+interface LoggerState {
+  consoleLevel: LogLevel;
+  quiet: boolean;
+  verbose: boolean;
+  initialized: boolean;
+}
+
+const state: LoggerState = {
+  consoleLevel: "info",
+  quiet: false,
+  verbose: false,
+  initialized: false,
+};
+
+/**
+ * Get today's log file path
+ */
+function getLogFilePath(): string {
+  const date = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+  return join(LOGS_DIR, `speak_${date}.log`);
+}
+
+/**
+ * Format timestamp for logging
+ */
+function timestamp(): string {
+  return new Date().toISOString();
+}
+
+/**
+ * Initialize logger with config
+ */
+export function initLogger(options: {
+  logLevel?: LogLevel;
+  quiet?: boolean;
+  verbose?: boolean;
+}): void {
+  state.consoleLevel = options.logLevel ?? "info";
+  state.quiet = options.quiet ?? false;
+  state.verbose = options.verbose ?? false;
+  state.initialized = true;
+
+  // Ensure log directory exists
+  ensureChatterDir();
+}
+
+/**
+ * Write structured JSON to log file
+ */
+function writeToFile(level: LogLevel, message: string, data?: Record<string, unknown>): void {
+  try {
+    const logPath = getLogFilePath();
+    const entry = {
+      timestamp: timestamp(),
+      level,
+      message,
+      ...(data && { data }),
+    };
+    appendFileSync(logPath, JSON.stringify(entry) + "\n");
+  } catch {
+    // Silently ignore file write errors to avoid infinite loops
+  }
+}
+
+/**
+ * Check if a log level should be shown on console
+ */
+function shouldLogToConsole(level: LogLevel): boolean {
+  if (state.quiet && level !== "error") return false;
+  if (state.verbose) return true;
+  return LOG_LEVELS[level] >= LOG_LEVELS[state.consoleLevel];
+}
+
+/**
+ * Format console output with colors
+ */
+function formatConsole(level: LogLevel, message: string): string {
+  const prefix = {
+    debug: pc.dim("[debug]"),
+    info: pc.blue("[info]"),
+    warn: pc.yellow("[warn]"),
+    error: pc.red("[error]"),
+  };
+  return `${prefix[level]} ${message}`;
+}
+
+/**
+ * Core logging function
+ */
+function log(level: LogLevel, message: string, data?: Record<string, unknown>): void {
+  // Always write to file at all levels
+  writeToFile(level, message, data);
+
+  // Console output based on level/quiet/verbose
+  if (shouldLogToConsole(level)) {
+    console.log(formatConsole(level, message));
+    if (data && (state.verbose || level === "error")) {
+      console.log(pc.dim(JSON.stringify(data, null, 2)));
+    }
+  }
+}
+
+/**
+ * Public logging functions
+ */
+export const logger = {
+  debug: (message: string, data?: Record<string, unknown>) => log("debug", message, data),
+  info: (message: string, data?: Record<string, unknown>) => log("info", message, data),
+  warn: (message: string, data?: Record<string, unknown>) => log("warn", message, data),
+  error: (message: string, data?: Record<string, unknown>) => log("error", message, data),
+
+  /**
+   * Log an error with stack trace
+   */
+  exception: (message: string, error: unknown) => {
+    const errorData: Record<string, unknown> = {};
+    if (error instanceof Error) {
+      errorData.name = error.name;
+      errorData.message = error.message;
+      errorData.stack = error.stack;
+    } else {
+      errorData.error = String(error);
+    }
+    log("error", message, errorData);
+  },
+
+  /**
+   * Print to console without logging to file (for user output)
+   */
+  print: (message: string) => {
+    if (!state.quiet) {
+      console.log(message);
+    }
+  },
+
+  /**
+   * Print success message
+   */
+  success: (message: string) => {
+    if (!state.quiet) {
+      console.log(pc.green("✓ " + message));
+    }
+    writeToFile("info", message, { success: true });
+  },
+
+  /**
+   * Print progress/status update
+   */
+  status: (message: string) => {
+    if (!state.quiet) {
+      console.log(pc.cyan("→ " + message));
+    }
+    writeToFile("info", message, { status: true });
+  },
+};
+
+
+================================================================================
+
+FILE: src/ui/progress.ts
+
+================================================================================
+/**
+ * Progress display utilities for speak CLI
+ *
+ * Since TTS generation doesn't provide intermediate progress,
+ * we use a spinner with optional ETA based on text length.
+ */
+
+import pc from "picocolors";
+
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+export interface ProgressOptions {
+  text: string;
+  showEta?: boolean;
+  quiet?: boolean;
+}
+
+export interface Progress {
+  start: () => void;
+  update: (message: string) => void;
+  stop: (success?: boolean, message?: string) => void;
+}
+
+/**
+ * Estimate audio duration based on text length
+ * Based on benchmark: ~150 chars = ~3s audio at normal speed
+ */
+function estimateAudioDuration(text: string, speed: number = 1.0): number {
+  const charsPerSecond = 50; // Approximate speaking rate
+  return (text.length / charsPerSecond) / speed;
+}
+
+/**
+ * Estimate generation time based on text length and expected RTF
+ * Based on benchmark: RTF ~0.35x on M1 Max
+ */
+function estimateGenerationTime(text: string, speed: number = 1.0): number {
+  const estimatedDuration = estimateAudioDuration(text, speed);
+  const rtf = 0.5; // Conservative estimate (first run may be slower)
+  return estimatedDuration * rtf;
+}
+
+/**
+ * Format seconds as human-readable duration
+ */
+function formatDuration(seconds: number): string {
+  if (seconds < 60) {
+    return `${Math.round(seconds)}s`;
+  } else if (seconds < 3600) {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.round(seconds % 60);
+    return `${mins}m ${secs}s`;
+  } else {
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.round((seconds % 3600) / 60);
+    return `${hours}h ${mins}m`;
+  }
+}
+
+/**
+ * Create a spinner-based progress indicator
+ */
+export function createSpinner(options: ProgressOptions): Progress {
+  const { text, showEta = true, quiet = false } = options;
+
+  let frameIndex = 0;
+  let intervalId: Timer | null = null;
+  let startTime = 0;
+  let currentMessage = "";
+
+  const estimatedTime = estimateGenerationTime(text);
+  const estimatedDuration = estimateAudioDuration(text);
+
+  function render() {
+    if (quiet) return;
+
+    const frame = SPINNER_FRAMES[frameIndex];
+    frameIndex = (frameIndex + 1) % SPINNER_FRAMES.length;
+
+    const elapsed = (Date.now() - startTime) / 1000;
+    let line = `${pc.cyan(frame)} ${currentMessage}`;
+
+    if (showEta && estimatedTime > 2) {
+      const remaining = Math.max(0, estimatedTime - elapsed);
+      if (remaining > 0) {
+        line += pc.dim(` (ETA: ${formatDuration(remaining)})`);
+      } else {
+        line += pc.dim(` (finalizing...)`);
+      }
+    }
+
+    // Clear line and write
+    process.stdout.write(`\r\x1b[K${line}`);
+  }
+
+  return {
+    start() {
+      if (quiet) return;
+      startTime = Date.now();
+      currentMessage = "Generating audio...";
+
+      // Show initial estimate
+      if (showEta && estimatedTime > 2) {
+        const etaStr = formatDuration(estimatedTime);
+        const durationStr = formatDuration(estimatedDuration);
+        console.log(pc.dim(`  Estimated: ~${durationStr} of audio (~${etaStr} to generate)`));
+      }
+
+      intervalId = setInterval(render, 80);
+    },
+
+    update(message: string) {
+      currentMessage = message;
+    },
+
+    stop(success = true, message?: string) {
+      if (intervalId) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+
+      if (quiet) return;
+
+      // Clear the spinner line
+      process.stdout.write("\r\x1b[K");
+
+      if (message) {
+        const icon = success ? pc.green("✓") : pc.red("✗");
+        console.log(`${icon} ${message}`);
+      }
+    },
+  };
+}
+
+/**
+ * Progress bar for known-length operations (like streaming chunks)
+ */
+export interface ProgressBarOptions {
+  total: number;
+  width?: number;
+  quiet?: boolean;
+}
+
+export interface ProgressBar {
+  update: (current: number, message?: string) => void;
+  finish: () => void;
+}
+
+export function createProgressBar(options: ProgressBarOptions): ProgressBar {
+  const { total, width = 30, quiet = false } = options;
+  let lastRenderedLine = "";
+
+  function render(current: number, message?: string) {
+    if (quiet) return;
+
+    const percent = Math.min(100, Math.round((current / total) * 100));
+    const filledWidth = Math.round((current / total) * width);
+    const emptyWidth = width - filledWidth;
+
+    const filled = "█".repeat(filledWidth);
+    const empty = "░".repeat(emptyWidth);
+    const bar = `[${filled}${empty}]`;
+
+    let line = `${bar} ${percent}% (${current}/${total})`;
+    if (message) {
+      line += ` ${pc.dim(message)}`;
+    }
+
+    if (line !== lastRenderedLine) {
+      process.stdout.write(`\r\x1b[K${line}`);
+      lastRenderedLine = line;
+    }
+  }
+
+  return {
+    update(current: number, message?: string) {
+      render(current, message);
+    },
+
+    finish() {
+      if (!quiet) {
+        process.stdout.write("\n");
+      }
+    },
+  };
+}
+
+
+================================================================================
+
+FILE: src/utils/completions.ts
+
+================================================================================
+/**
+ * Shell completions generator for speak CLI
+ */
+
+export type Shell = "bash" | "zsh" | "fish";
+
+const COMMANDS = ["setup", "models", "daemon", "completions", "config"];
+const DAEMON_SUBCOMMANDS = ["kill"];
+const SHELL_OPTIONS = ["bash", "zsh", "fish"];
+
+const FLAGS = [
+  "-c",
+  "--clipboard",
+  "-o",
+  "--output",
+  "-m",
+  "--model",
+  "-t",
+  "--temp",
+  "-s",
+  "--speed",
+  "-v",
+  "--voice",
+  "--markdown",
+  "--code-blocks",
+  "--play",
+  "--stream",
+  "--preview",
+  "--daemon",
+  "--verbose",
+  "--quiet",
+  "--help",
+  "--version",
+];
+
+const MODELS = [
+  "mlx-community/chatterbox-turbo-8bit",
+  "mlx-community/chatterbox-turbo-fp16",
+  "mlx-community/chatterbox-turbo-4bit",
+  "mlx-community/chatterbox-turbo-5bit",
+  "mlx-community/chatterbox-turbo-6bit",
+];
+
+const MARKDOWN_MODES = ["plain", "smart"];
+const CODE_BLOCK_MODES = ["read", "skip", "placeholder"];
+
+/**
+ * Generate bash completion script
+ */
+export function generateBashCompletions(): string {
+  return `# Bash completions for speak CLI
+# Add to ~/.bashrc or ~/.bash_profile:
+# eval "$(speak completions bash)"
+
+_speak_completions() {
+    local cur prev opts commands
+    COMPREPLY=()
+    cur="\${COMP_WORDS[COMP_CWORD]}"
+    prev="\${COMP_WORDS[COMP_CWORD-1]}"
+
+    commands="${COMMANDS.join(" ")}"
+    opts="${FLAGS.join(" ")}"
+
+    # Handle subcommands
+    case "\${COMP_WORDS[1]}" in
+        daemon)
+            COMPREPLY=( $(compgen -W "${DAEMON_SUBCOMMANDS.join(" ")}" -- "\${cur}") )
+            return 0
+            ;;
+        completions)
+            COMPREPLY=( $(compgen -W "${SHELL_OPTIONS.join(" ")}" -- "\${cur}") )
+            return 0
+            ;;
+    esac
+
+    # Handle option arguments
+    case "\${prev}" in
+        -m|--model)
+            COMPREPLY=( $(compgen -W "${MODELS.join(" ")}" -- "\${cur}") )
+            return 0
+            ;;
+        --markdown)
+            COMPREPLY=( $(compgen -W "${MARKDOWN_MODES.join(" ")}" -- "\${cur}") )
+            return 0
+            ;;
+        --code-blocks)
+            COMPREPLY=( $(compgen -W "${CODE_BLOCK_MODES.join(" ")}" -- "\${cur}") )
+            return 0
+            ;;
+        -o|--output|-v|--voice)
+            # File/directory completion
+            COMPREPLY=( $(compgen -f -- "\${cur}") )
+            return 0
+            ;;
+    esac
+
+    # Complete commands or options
+    if [[ \${cur} == -* ]]; then
+        COMPREPLY=( $(compgen -W "\${opts}" -- "\${cur}") )
+    elif [[ \${COMP_CWORD} -eq 1 ]]; then
+        COMPREPLY=( $(compgen -W "\${commands}" -- "\${cur}") )
+    else
+        # Default to file completion for text/file arguments
+        COMPREPLY=( $(compgen -f -- "\${cur}") )
+    fi
+
+    return 0
+}
+
+complete -F _speak_completions speak
+`;
+}
+
+/**
+ * Generate zsh completion script
+ */
+export function generateZshCompletions(): string {
+  return `#compdef speak
+# Zsh completions for speak CLI
+# Add to ~/.zshrc:
+# eval "$(speak completions zsh)"
+
+_speak() {
+    local -a commands options
+
+    commands=(
+        'setup:Set up Python environment'
+        'models:List available TTS models'
+        'daemon:Daemon management'
+        'completions:Generate shell completions'
+        'config:Show current configuration'
+    )
+
+    options=(
+        '-c[Read from system clipboard]'
+        '--clipboard[Read from system clipboard]'
+        '-o[Output directory]:directory:_files -/'
+        '--output[Output directory]:directory:_files -/'
+        '-m[TTS model]:model:(${MODELS.join(" ")})'
+        '--model[TTS model]:model:(${MODELS.join(" ")})'
+        '-t[Temperature (0-1)]:temperature:'
+        '--temp[Temperature (0-1)]:temperature:'
+        '-s[Playback speed (0-2)]:speed:'
+        '--speed[Playback speed (0-2)]:speed:'
+        '-v[Voice preset or path to .wav]:voice:_files -g "*.wav"'
+        '--voice[Voice preset or path to .wav]:voice:_files -g "*.wav"'
+        '--markdown[Markdown mode]:mode:(${MARKDOWN_MODES.join(" ")})'
+        '--code-blocks[Code handling]:mode:(${CODE_BLOCK_MODES.join(" ")})'
+        '--play[Play audio after generation]'
+        '--stream[Stream audio as it generates]'
+        '--preview[Generate first sentence only]'
+        '--daemon[Use persistent server]'
+        '--verbose[Show detailed progress]'
+        '--quiet[Suppress all output except errors]'
+        '--help[Show help]'
+        '--version[Show version]'
+    )
+
+    _arguments -s \\
+        $options \\
+        '1:command:->command' \\
+        '*:file:_files'
+
+    case $state in
+        command)
+            _describe -t commands 'speak commands' commands
+            ;;
+    esac
+}
+
+_speak_daemon() {
+    local -a subcommands
+    subcommands=(
+        'kill:Stop running daemon'
+    )
+    _describe -t subcommands 'daemon subcommands' subcommands
+}
+
+_speak_completions() {
+    local -a shells
+    shells=(bash zsh fish)
+    _describe -t shells 'shell' shells
+}
+
+compdef _speak speak
+`;
+}
+
+/**
+ * Generate fish completion script
+ */
+export function generateFishCompletions(): string {
+  return `# Fish completions for speak CLI
+# Save to ~/.config/fish/completions/speak.fish
+# Or run: speak completions fish > ~/.config/fish/completions/speak.fish
+
+# Disable file completions by default
+complete -c speak -f
+
+# Commands
+complete -c speak -n "__fish_use_subcommand" -a "setup" -d "Set up Python environment"
+complete -c speak -n "__fish_use_subcommand" -a "models" -d "List available TTS models"
+complete -c speak -n "__fish_use_subcommand" -a "daemon" -d "Daemon management"
+complete -c speak -n "__fish_use_subcommand" -a "completions" -d "Generate shell completions"
+complete -c speak -n "__fish_use_subcommand" -a "config" -d "Show current configuration"
+
+# Daemon subcommands
+complete -c speak -n "__fish_seen_subcommand_from daemon" -a "kill" -d "Stop running daemon"
+
+# Completions subcommands
+complete -c speak -n "__fish_seen_subcommand_from completions" -a "bash zsh fish"
+
+# Options
+complete -c speak -s c -l clipboard -d "Read from system clipboard"
+complete -c speak -s o -l output -d "Output directory" -r -a "(__fish_complete_directories)"
+complete -c speak -s m -l model -d "TTS model" -r -a "${MODELS.map((m) => `"${m}"`).join(" ")}"
+complete -c speak -s t -l temp -d "Temperature (0-1)" -r
+complete -c speak -s s -l speed -d "Playback speed (0-2)" -r
+complete -c speak -s v -l voice -d "Voice preset or .wav file" -r -F
+complete -c speak -l markdown -d "Markdown mode" -r -a "${MARKDOWN_MODES.join(" ")}"
+complete -c speak -l code-blocks -d "Code handling" -r -a "${CODE_BLOCK_MODES.join(" ")}"
+complete -c speak -l play -d "Play audio after generation"
+complete -c speak -l stream -d "Stream audio as it generates"
+complete -c speak -l preview -d "Generate first sentence only"
+complete -c speak -l daemon -d "Use persistent server"
+complete -c speak -l verbose -d "Show detailed progress"
+complete -c speak -l quiet -d "Suppress all output except errors"
+complete -c speak -l help -d "Show help"
+complete -c speak -l version -d "Show version"
+
+# Enable file completions for main command (text files)
+complete -c speak -n "__fish_use_subcommand" -a "(__fish_complete_suffix .txt .md)"
+`;
+}
+
+/**
+ * Get completions for a specific shell
+ */
+export function getCompletions(shell: Shell): string {
+  switch (shell) {
+    case "bash":
+      return generateBashCompletions();
+    case "zsh":
+      return generateZshCompletions();
+    case "fish":
+      return generateFishCompletions();
+    default:
+      throw new Error(`Unsupported shell: ${shell}`);
+  }
+}
+
+/**
+ * Get installation instructions for a specific shell
+ */
+export function getInstallInstructions(shell: Shell): string {
+  switch (shell) {
+    case "bash":
+      return `# Add to ~/.bashrc or ~/.bash_profile:
+eval "$(speak completions bash)"
+
+# Or save to a file:
+speak completions bash > ~/.local/share/bash-completion/completions/speak`;
+    case "zsh":
+      return `# Add to ~/.zshrc:
+eval "$(speak completions zsh)"
+
+# Or save to a file in your fpath:
+speak completions zsh > ~/.zfunc/_speak`;
+    case "fish":
+      return `# Save to fish completions directory:
+speak completions fish > ~/.config/fish/completions/speak.fish`;
+    default:
+      throw new Error(`Unsupported shell: ${shell}`);
+  }
+}
+
+
+================================================================================
+

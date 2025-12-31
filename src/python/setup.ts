@@ -1,14 +1,22 @@
 /**
  * Python environment setup for speak CLI
  *
- * Creates and manages a Python virtual environment with mlx-audio
- * in ~/.chatter/env/
+ * Setup strategy:
+ * 1. Check for existing working setup
+ * 2. Try embedded Python (most reliable)
+ * 3. Fall back to system Python with venv
  */
 
 import { existsSync, rmSync } from "fs";
 import { spawn } from "child_process";
 import { VENV_DIR, VENV_PYTHON, VENV_PIP, ensureChatterDir } from "../core/config.ts";
-import { logger } from "../ui/logger.ts";
+import { logger, logDecision } from "../ui/logger.ts";
+import {
+  hasEmbeddedPython,
+  installEmbeddedPython,
+  installPackages as installEmbeddedPackages,
+  getPythonPath,
+} from "./embedded.ts";
 
 /**
  * Required Python packages
@@ -176,11 +184,131 @@ export async function getPackageVersions(): Promise<Record<string, string>> {
   }
 }
 
+export interface SetupOptions {
+  force?: boolean;
+  showProgress?: boolean;
+  useEmbedded?: boolean;
+  onProgress?: (step: string, message: string, percent?: number) => void;
+}
+
+export interface SetupResult {
+  success: boolean;
+  pythonPath: string;
+  method: "embedded" | "venv" | "system";
+  error?: string;
+}
+
 /**
- * Run full setup (create venv + install packages)
+ * Check if existing setup is valid and working
  */
-export async function runSetup(options: { force?: boolean; showProgress?: boolean } = {}): Promise<boolean> {
-  const { force = false, showProgress = true } = options;
+async function checkExistingSetup(): Promise<SetupResult> {
+  try {
+    const pythonPath = getPythonPath();
+    const result = await runCommand(pythonPath, ["-c", "import mlx_audio; print('OK')"]);
+
+    if (result.exitCode === 0) {
+      return {
+        success: true,
+        pythonPath,
+        method: hasEmbeddedPython() ? "embedded" : "venv",
+      };
+    }
+  } catch {
+    // Fall through
+  }
+
+  return {
+    success: false,
+    pythonPath: "",
+    method: "system",
+    error: "Existing setup not valid",
+  };
+}
+
+/**
+ * Run full setup (unified flow from implementation plan)
+ *
+ * Strategy:
+ * 1. Check for existing working setup (unless force)
+ * 2. Try embedded Python (most reliable)
+ * 3. Fall back to system Python with venv
+ */
+export async function runSetup(options: SetupOptions = {}): Promise<boolean> {
+  const { force = false, showProgress = true, useEmbedded = true, onProgress } = options;
+
+  logDecision(
+    "Starting setup",
+    force ? "Force reinstall requested" : "Checking environment",
+    { force, useEmbedded }
+  );
+
+  // Step 1: Check existing setup (unless force)
+  if (!force) {
+    const existing = await checkExistingSetup();
+    if (existing.success) {
+      logDecision("Using existing setup", "Environment already valid", {
+        pythonPath: existing.pythonPath,
+        method: existing.method,
+      });
+      if (showProgress) {
+        logger.success(`Using existing ${existing.method} Python at ${existing.pythonPath}`);
+      }
+      return true;
+    }
+  }
+
+  // Step 2: Try embedded Python (most reliable)
+  if (useEmbedded) {
+    if (showProgress) {
+      logger.status("Setting up embedded Python...");
+    }
+    onProgress?.("python", "Setting up embedded Python...", 0);
+
+    if (!hasEmbeddedPython() || force) {
+      const installed = await installEmbeddedPython((msg, pct) => {
+        onProgress?.("python", msg, pct);
+        if (showProgress) {
+          logger.status(msg);
+        }
+      });
+
+      if (!installed) {
+        logger.warn("Embedded Python installation failed, trying venv");
+      }
+    }
+
+    if (hasEmbeddedPython()) {
+      onProgress?.("packages", "Installing packages...", 50);
+      if (showProgress) {
+        logger.status("Installing packages with embedded Python...");
+      }
+
+      const packagesInstalled = await installEmbeddedPackages(REQUIRED_PACKAGES, (msg) => {
+        onProgress?.("packages", msg);
+        if (showProgress) {
+          logger.status(msg);
+        }
+      });
+
+      if (packagesInstalled) {
+        // Verify
+        const result = await checkExistingSetup();
+        if (result.success) {
+          onProgress?.("complete", "Setup complete!", 100);
+          if (showProgress) {
+            logger.success("Setup complete with embedded Python");
+          }
+          return true;
+        }
+      }
+    }
+  }
+
+  // Step 3: Fall back to venv with system Python
+  if (showProgress) {
+    logger.status("Falling back to system Python with venv...");
+  }
+  onProgress?.("venv", "Creating virtual environment...", 0);
 
   // Check Python
   const python = await checkPython();
@@ -197,6 +325,7 @@ export async function runSetup(options: { force?: boolean; showProgress?: boolea
   }
 
   // Install packages
+  onProgress?.("packages", "Installing packages...", 50);
   const packagesInstalled = await installPackages(showProgress);
   if (!packagesInstalled) {
     return false;
@@ -208,9 +337,10 @@ export async function runSetup(options: { force?: boolean; showProgress?: boolea
   const mlxAudio = versions["mlx-audio"];
   if (mlxAudio) {
     logger.success(`mlx-audio ${mlxAudio} installed successfully`);
+    onProgress?.("complete", "Setup complete!", 100);
+    return true;
   } else {
     logger.warn("Could not verify mlx-audio installation");
+    return false;
   }
-
-  return true;
 }
