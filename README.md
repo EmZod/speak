@@ -339,7 +339,8 @@ For the full list of supported emotion tags, see the [Chatterbox documentation](
 
 ## For AI Agents
 
-See [AGENTS.md](AGENTS.md) for skill-based integration with Claude Code and other AI agents.
+- **[SKILL.md](SKILL.md)** - Agent-optimized documentation (copy to your skills directory)
+- **[AGENTS.md](AGENTS.md)** - Setup instructions for Claude Code and other AI agents
 
 ## Troubleshooting
 
