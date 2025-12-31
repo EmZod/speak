@@ -429,8 +429,8 @@ def handle_stream_binary(request_id: str, params: Dict, conn) -> None:
         import scipy.io.wavfile as wavfile
         import numpy as np
         import io
-        from contextlib import redirect_stdout
-        
+        from contextlib import redirect_stdout, redirect_stderr
+
         # Split text into chunks to prevent model destabilization
         chunks = split_text_into_chunks(text)
         
@@ -449,7 +449,7 @@ def handle_stream_binary(request_id: str, params: Dict, conn) -> None:
             log("debug", f"Generating text chunk {i+1}/{len(chunks)}: {len(text_chunk)} chars")
             
             # Generate audio (still needs file I/O internally, but we read and send bytes)
-            with redirect_stdout(io.StringIO()):
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 generate_audio(
                     text=text_chunk,
                     model=model_name,
