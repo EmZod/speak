@@ -1,6 +1,8 @@
 # speak
 
-A fast CLI tool for Agents to convert their text output to speech using Chatterbox TTS on Apple Silicon. Agent SKILL files included. 
+A fast, reliable CLI tool for converting text to speech using Chatterbox TTS on Apple Silicon. Built for AI agents with features like auto-chunking, resume capability, and batch processing.
+
+**v1.1.0** - See [CHANGELOG.md](CHANGELOG.md) for details. 
 
 ## Quick Start
 
@@ -29,6 +31,7 @@ That's it! On first run, speak automatically:
 - macOS with Apple Silicon (M1/M2/M3)
 - [Bun](https://bun.sh) runtime
 - Python 3.10+
+- sox (for auto-chunking and concat): `brew install sox`
 
 ### Manual Setup (optional)
 
@@ -97,6 +100,39 @@ speak "Hello!" --play
 
 # Stream audio as it generates (for long text)
 speak article.md --stream
+```
+
+### Long Documents (v1.1)
+
+```bash
+# Auto-chunk long documents for reliable generation
+speak book-chapter.md --auto-chunk --output chapter.wav
+
+# Get duration estimate before generating
+speak --estimate document.md
+
+# Resume interrupted generation
+speak --resume ~/.chatter/manifest.json
+
+# Preview without generating
+speak --dry-run document.md --auto-chunk
+```
+
+### Batch Processing (v1.1)
+
+```bash
+# Process multiple files
+speak chapter1.md chapter2.md chapter3.md --output-dir ~/Audio/book/
+
+# Skip already-generated files
+speak *.md --output-dir ~/Audio/ --skip-existing
+```
+
+### Concatenate Audio Files (v1.1)
+
+```bash
+# Combine multiple audio files
+speak concat part1.wav part2.wav part3.wav --out combined.wav
 ```
 
 ### Markdown Processing
@@ -176,10 +212,10 @@ Features:
 |---------|-------------|
 | `speak <text\|file>` | Generate speech |
 | `speak setup` | Set up Python environment |
-| `speak setup --health` | Check environment health |
+| `speak health` | Check system health |
 | `speak models` | List available TTS models |
 | `speak config` | Show current configuration |
-| `speak config --init` | Create default config file |
+| `speak concat <files...>` | Concatenate audio files |
 | `speak daemon kill` | Stop running TTS server |
 | `speak completions <shell>` | Generate shell completions |
 
@@ -188,7 +224,7 @@ Features:
 | Option | Description |
 |--------|-------------|
 | `-c, --clipboard` | Read from system clipboard |
-| `-o, --output <dir>` | Output directory (default: ~/Audio/speak) |
+| `-o, --output <path>` | Output file (.wav) or directory |
 | `-m, --model <name>` | TTS model (default: chatterbox-turbo-8bit) |
 | `-t, --temp <0-1>` | Temperature (default: 0.5) |
 | `-s, --speed <0-2>` | Playback speed (default: 1.0) |
@@ -201,6 +237,15 @@ Features:
 | `--daemon` | Keep server running |
 | `--verbose` | Show detailed progress |
 | `--quiet` | Suppress output except errors |
+| `--timeout <sec>` | Generation timeout (default: 300) |
+| `--auto-chunk` | Chunk long documents automatically |
+| `--chunk-size <n>` | Max chars per chunk (default: 6000) |
+| `--resume <file>` | Resume from manifest file |
+| `--keep-chunks` | Keep intermediate chunk files |
+| `--output-dir <dir>` | Output directory for batch mode |
+| `--skip-existing` | Skip files with existing output |
+| `--estimate` | Show duration estimate only |
+| `--dry-run` | Preview without generating |
 
 ## Configuration
 
