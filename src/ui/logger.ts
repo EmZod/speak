@@ -5,6 +5,7 @@
  * - Console logging (respects config log_level)
  * - Structured JSON format for files
  * - Human-readable format for console
+ * - Decision logging for critical code paths
  */
 
 import { appendFileSync, existsSync, mkdirSync } from "fs";
@@ -12,6 +13,21 @@ import { join } from "path";
 import pc from "picocolors";
 import { LOGS_DIR, ensureChatterDir } from "../core/config.ts";
 import type { LogLevel } from "../core/types.ts";
+
+/**
+ * Structured log entry for file logging
+ */
+export interface LogEntry {
+  timestamp: string;
+  level: LogLevel;
+  message: string;
+  data?: Record<string, unknown>;
+  decision?: {
+    what: string;
+    why: string;
+    alternatives_considered?: string[];
+  };
+}
 
 /**
  * Log level priority (lower = more verbose)
@@ -181,3 +197,41 @@ export const logger = {
     writeToFile("info", message, { status: true });
   },
 };
+
+/**
+ * Log a decision point in critical code paths.
+ * Decisions are always written to file and optionally to console.
+ *
+ * @param what - What decision was made
+ * @param why - Why this decision was made
+ * @param context - Additional context data
+ */
+export function logDecision(
+  what: string,
+  why: string,
+  context?: Record<string, unknown>
+): void {
+  const entry: LogEntry = {
+    timestamp: timestamp(),
+    level: "info",
+    message: `Decision: ${what}`,
+    data: context,
+    decision: { what, why },
+  };
+
+  // Always write to file
+  try {
+    const logPath = getLogFilePath();
+    appendFileSync(logPath, JSON.stringify(entry) + "\n");
+  } catch {
+    // Silently ignore file write errors
+  }
+
+  // Console output if verbose or info level enabled
+  if (shouldLogToConsole("info")) {
+    console.log(formatConsole("info", `Decision: ${what} (${why})`));
+    if (context && state.verbose) {
+      console.log(pc.dim(JSON.stringify(context, null, 2)));
+    }
+  }
+}

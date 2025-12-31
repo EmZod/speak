@@ -18,7 +18,7 @@ import {
 } from "./core/config.ts";
 import type { Config } from "./core/types.ts";
 
-const VERSION = "0.1.0";
+const VERSION = "1.1.0";
 
 // Load configuration at startup
 const config: Config = loadConfig();
@@ -150,146 +150,60 @@ program
         process.exit(1);
       }
 
-      // Streaming mode
+      // Streaming mode - uses new binary protocol streaming
       if (options.stream) {
-        const { generateStream } = await import("./bridge/client.ts");
+        const { StreamOrchestrator } = await import("./streaming/orchestrator.ts");
+
+        const orchestrator = new StreamOrchestrator(24000, {
+          initialBufferSeconds: 3.0,
+          minBufferSeconds: 1.0,
+          resumeBufferSeconds: 2.0,
+        });
+
+        // Handle Ctrl+C
+        const cancelHandler = () => {
+          orchestrator.cancel("User interrupted");
+        };
+        process.once("SIGINT", cancelHandler);
 
         if (!options.quiet) {
-          console.log(pc.dim("Streaming audio with adaptive buffering..."));
+          console.log(pc.dim("Streaming audio..."));
         }
 
-        // Buffer configuration
-        const INITIAL_BUFFER_SECONDS = 5.0;  // Wait for this much before starting
-        const MIN_BUFFER_SECONDS = 2.0;      // Pause if buffer drops below this
-        const REBUFFER_TARGET_SECONDS = 4.0; // When rebuffering, wait until this level
-
-        // Chunk queue for buffered playback
-        const chunkQueue: Array<{ path: string; duration: number; num: number }> = [];
-        let bufferedDuration = 0;
-        let playbackStarted = false;
-        let playbackPromise: Promise<void> | null = null;
-        let generationComplete = false;
-        let rebufferingCount = 0;
-
-        // Playback loop - runs independently of chunk reception
-        async function startPlayback() {
-          while (chunkQueue.length > 0 || !generationComplete) {
-            // Check if we need to rebuffer (buffer too low and generation ongoing)
-            if (!generationComplete && bufferedDuration < MIN_BUFFER_SECONDS && chunkQueue.length === 0) {
-              rebufferingCount++;
-              if (!options.quiet) {
-                process.stdout.write(
-                  `\r\x1b[K${pc.yellow(`  Rebuffering... (${bufferedDuration.toFixed(1)}s < ${MIN_BUFFER_SECONDS}s minimum)`)}`
-                );
-              }
-
-              // Wait until we have enough buffer again
-              while (!generationComplete && bufferedDuration < REBUFFER_TARGET_SECONDS) {
-                await new Promise((r) => setTimeout(r, 100));
-                if (!options.quiet) {
-                  process.stdout.write(
-                    `\r\x1b[K${pc.yellow(`  Rebuffering: ${bufferedDuration.toFixed(1)}s / ${REBUFFER_TARGET_SECONDS}s`)}`
-                  );
-                }
-              }
-
-              if (!options.quiet && bufferedDuration >= REBUFFER_TARGET_SECONDS) {
-                process.stdout.write(`\r\x1b[K${pc.dim(`  Resuming playback...`)}\n`);
-              }
+        const result = await orchestrator.stream({
+          text,
+          model: options.model,
+          temperature: parseFloat(options.temp),
+          speed: parseFloat(options.speed),
+          voice: options.voice,
+          onProgress: (progress) => {
+            if (!options.quiet && options.verbose) {
+              process.stdout.write(
+                `\r${pc.dim(`State: ${progress.state} | Buffer: ${progress.bufferedSeconds.toFixed(1)}s | Chunks: ${progress.chunksReceived}`)}`
+              );
             }
+          },
+        });
 
-            if (chunkQueue.length > 0) {
-              const chunk = chunkQueue.shift()!;
-              bufferedDuration -= chunk.duration;
+        process.off("SIGINT", cancelHandler);
 
-              if (!options.quiet) {
-                const bufferStatus = bufferedDuration.toFixed(1);
-                const bufferColor = bufferedDuration < MIN_BUFFER_SECONDS ? pc.yellow : pc.green;
-                process.stdout.write(
-                  `\r\x1b[K${pc.dim(`  Playing chunk ${chunk.num} (${chunk.duration.toFixed(1)}s) | Buffer: `)}${bufferColor(bufferStatus + "s")}`
-                );
-              }
-
-              await playAudio(chunk.path);
-            } else if (!generationComplete) {
-              // Wait a bit for more chunks
-              await new Promise((r) => setTimeout(r, 50));
+        if (!options.quiet) {
+          if (result.success) {
+            console.log(pc.green(`\n✓ Streamed ${result.totalChunks} chunks`));
+            console.log(pc.dim(`  Duration: ${result.totalDurationSeconds.toFixed(1)}s`));
+            if (result.rebufferCount > 0) {
+              console.log(pc.yellow(`  Rebuffered: ${result.rebufferCount} time(s)`));
             }
+            if (result.underrunCount > 0) {
+              console.log(pc.yellow(`  Underruns: ${result.underrunCount} samples`));
+            }
+          } else {
+            console.log(pc.red(`\n✗ Streaming failed: ${result.error}`));
           }
         }
 
-        let result: Awaited<ReturnType<typeof generateStream>> | null = null;
-        let streamError: Error | null = null;
-
-        try {
-          result = await generateStream(
-            {
-              text,
-              model: options.model,
-              temperature: parseFloat(options.temp),
-              speed: parseFloat(options.speed),
-              voice: options.voice,
-              streaming_interval: 1.5, // Slightly larger chunks for more buffer stability
-            },
-            async (chunk) => {
-              // Add chunk to queue
-              chunkQueue.push({
-                path: chunk.audio_path,
-                duration: chunk.duration,
-                num: chunk.chunk,
-              });
-              bufferedDuration += chunk.duration;
-
-              if (!options.quiet && !playbackStarted) {
-                process.stdout.write(
-                  `\r\x1b[K${pc.dim(`  Buffering: ${bufferedDuration.toFixed(1)}s / ${INITIAL_BUFFER_SECONDS}s`)}`
-                );
-              }
-
-              // Start playback once we have enough initial buffer
-              if (!playbackStarted && bufferedDuration >= INITIAL_BUFFER_SECONDS) {
-                playbackStarted = true;
-                if (!options.quiet) {
-                  console.log(pc.dim(`\n  Buffer ready, starting playback...`));
-                }
-                playbackPromise = startPlayback();
-              }
-            }
-          );
-        } catch (err) {
-          streamError = err instanceof Error ? err : new Error(String(err));
-        } finally {
-          // Always set generationComplete to prevent playback loop from hanging
-          generationComplete = true;
-        }
-
-        // If playback never started (short text), start it now
-        if (!playbackStarted && chunkQueue.length > 0) {
-          playbackStarted = true;
-          if (!options.quiet) {
-            console.log(pc.dim(`\n  Starting playback...`));
-          }
-          playbackPromise = startPlayback();
-        }
-
-        // Wait for playback to finish
-        if (playbackPromise) {
-          await playbackPromise;
-        }
-
-        // Re-throw error after playback finishes (so user hears partial audio)
-        if (streamError) {
-          throw streamError;
-        }
-
-        if (!options.quiet && result) {
-          console.log(pc.green(`\n\n✓ Streamed ${result.total_chunks} chunks`));
-          console.log(pc.dim(`  Total: ${result.total_duration.toFixed(1)}s of audio`));
-          console.log(pc.dim(`  RTF: ${result.rtf.toFixed(2)}x`));
-          if (rebufferingCount > 0) {
-            console.log(pc.yellow(`  Rebuffered ${rebufferingCount} time(s)`));
-          }
-        }
+        // Don't need daemon cleanup for streaming - orchestrator handles socket
+        process.exit(result.success ? 0 : 1);
       } else {
         // Non-streaming mode with progress spinner
         const { createSpinner } = await import("./ui/progress.ts");
@@ -477,6 +391,43 @@ program
     console.log("  " + pc.bold("voice") + ": " + (config.voice || "(none)"));
     console.log("  " + pc.bold("daemon") + ": " + config.daemon);
     console.log("  " + pc.bold("log_level") + ": " + config.log_level);
+  });
+
+// Subcommand: health
+program
+  .command("health")
+  .description("Check system health")
+  .option("--json", "Output as JSON")
+  .action(async (options) => {
+    const { runHealthChecks } = await import("./core/health.ts");
+
+    const report = await runHealthChecks();
+
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      const statusIcon = {
+        healthy: pc.green("✓"),
+        degraded: pc.yellow("⚠"),
+        unhealthy: pc.red("✗"),
+      };
+
+      console.log(`\n${statusIcon[report.overall]} System: ${report.overall.toUpperCase()}\n`);
+
+      for (const check of report.checks) {
+        const icon =
+          check.status === "pass"
+            ? pc.green("✓")
+            : check.status === "warn"
+              ? pc.yellow("⚠")
+              : pc.red("✗");
+        console.log(`  ${icon} ${check.name}: ${check.message}`);
+      }
+
+      console.log();
+    }
+
+    process.exit(report.overall === "unhealthy" ? 1 : 0);
   });
 
 // Parse arguments
