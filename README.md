@@ -1,7 +1,5 @@
 # speak
 
-[![Test](https://github.com/EmZod/speak/actions/workflows/test.yml/badge.svg)](https://github.com/EmZod/speak/actions/workflows/test.yml)
-
 A fast CLI tool for AI agents to convert their text output to speech using Chatterbox TTS on Apple Silicon.
 
 ## Quick Start
