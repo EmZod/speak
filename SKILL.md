@@ -190,6 +190,13 @@ speak health        # Check status
 speak daemon kill   # Stop manually
 ```
 
+## Additional Documentation
+
+For more details, see:
+- [docs/usage.md](docs/usage.md) - Complete usage guide with all options
+- [docs/configuration.md](docs/configuration.md) - Config file, environment variables
+- [docs/troubleshooting.md](docs/troubleshooting.md) - Common issues and fixes
+
 ## Notes
 
 - Requires Apple Silicon Mac (M1/M2/M3)
