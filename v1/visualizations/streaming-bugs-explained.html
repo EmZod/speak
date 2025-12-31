@@ -1,0 +1,1871 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>speak v1.0 → v1.1: The Streaming Saga</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.1/anime.min.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --bg-deep: #0d1117;
+      --bg-surface: #161b22;
+      --bg-elevated: #21262d;
+      --border-subtle: #30363d;
+      --border-emphasis: #484f58;
+      --text-primary: #e6edf3;
+      --text-secondary: #8b949e;
+      --text-muted: #6e7681;
+      
+      --purple: #a371f7;
+      --green: #3fb950;
+      --orange: #f97316;
+      --red: #f85149;
+      --yellow: #d29922;
+      --blue: #58a6ff;
+      --cyan: #39d4e8;
+    }
+
+    body {
+      font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+      background: var(--bg-deep);
+      color: var(--text-primary);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+
+    /* Header */
+    header {
+      text-align: center;
+      margin-bottom: 3rem;
+      padding: 2rem;
+      background: linear-gradient(135deg, rgba(163, 113, 247, 0.1) 0%, rgba(88, 166, 255, 0.1) 100%);
+      border-radius: 12px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    header h1 {
+      font-size: 2.5rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+      background: linear-gradient(135deg, var(--purple), var(--blue));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    header .subtitle {
+      font-size: 1.1rem;
+      color: var(--text-secondary);
+    }
+
+    header .quote {
+      margin-top: 1.5rem;
+      font-style: italic;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    /* Scene Navigation */
+    .scene-nav {
+      display: flex;
+      gap: 0.5rem;
+      justify-content: center;
+      margin-bottom: 2rem;
+      flex-wrap: wrap;
+    }
+
+    .scene-nav button {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.85rem;
+      transition: all 0.2s ease;
+    }
+
+    .scene-nav button:hover {
+      border-color: var(--purple);
+      color: var(--text-primary);
+    }
+
+    .scene-nav button.active {
+      background: var(--purple);
+      border-color: var(--purple);
+      color: white;
+    }
+
+    /* Scene */
+    .scene {
+      display: none;
+      animation: fadeIn 0.5s ease;
+    }
+
+    .scene.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .scene-header {
+      margin-bottom: 2rem;
+    }
+
+    .scene-badge {
+      display: inline-block;
+      padding: 0.25rem 0.75rem;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.5rem;
+    }
+
+    .scene-badge.setup { background: var(--blue); color: white; }
+    .scene-badge.problem { background: var(--red); color: white; }
+    .scene-badge.analysis { background: var(--orange); color: white; }
+    .scene-badge.solution { background: var(--green); color: white; }
+    .scene-badge.victory { background: var(--purple); color: white; }
+
+    .scene-title {
+      font-size: 1.8rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+    }
+
+    .scene-desc {
+      color: var(--text-secondary);
+      font-size: 1rem;
+    }
+
+    /* Split View */
+    .split-view {
+      display: flex;
+      gap: 1.5rem;
+    }
+
+    .split-main {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .split-sequence {
+      width: 280px;
+      flex-shrink: 0;
+    }
+
+    /* Canvas */
+    .canvas-container {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .canvas-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.75rem 1rem;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .canvas-title {
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+
+    .canvas-status {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: pulse 1.5s infinite;
+    }
+
+    .status-dot.paused {
+      background: var(--text-muted);
+      animation: none;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .canvas-svg {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    /* Controls */
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 1rem;
+      background: var(--bg-elevated);
+      border-top: 1px solid var(--border-subtle);
+      flex-wrap: wrap;
+    }
+
+    .control-btn {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-primary);
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.85rem;
+      transition: all 0.2s ease;
+    }
+
+    .control-btn:hover {
+      border-color: var(--purple);
+    }
+
+    .control-btn.primary {
+      background: var(--purple);
+      border-color: var(--purple);
+    }
+
+    .control-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .progress-container {
+      flex: 1;
+      min-width: 150px;
+    }
+
+    .progress-bar {
+      height: 6px;
+      background: var(--bg-deep);
+      border-radius: 3px;
+      overflow: hidden;
+      margin-bottom: 0.25rem;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: var(--purple);
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+
+    .progress-label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .speed-control {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+
+    .speed-control input[type="range"] {
+      width: 80px;
+      accent-color: var(--purple);
+    }
+
+    /* Narration */
+    .narration-box {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 1rem;
+      margin-top: 1rem;
+      min-height: 60px;
+      transition: all 0.3s ease;
+    }
+
+    .narration-box.active {
+      border-color: var(--purple);
+    }
+
+    .step-num {
+      display: inline-block;
+      background: var(--purple);
+      color: white;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      text-align: center;
+      line-height: 24px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      margin-right: 0.75rem;
+    }
+
+    .step-text {
+      color: var(--text-primary);
+      font-size: 0.9rem;
+    }
+
+    /* Sequence Diagram */
+    .sequence-container {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .sequence-title {
+      padding: 0.75rem 1rem;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-subtle);
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+
+    .sequence-svg {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .seq-step {
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+
+    .seq-step.active {
+      opacity: 1;
+    }
+
+    .seq-step.completed {
+      opacity: 0.4;
+    }
+
+    /* Info Cards */
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 1rem;
+      margin-top: 1.5rem;
+    }
+
+    .info-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 1rem;
+    }
+
+    .info-card.danger {
+      border-color: var(--red);
+      background: rgba(248, 81, 73, 0.1);
+    }
+
+    .info-card.success {
+      border-color: var(--green);
+      background: rgba(63, 185, 80, 0.1);
+    }
+
+    .info-card h4 {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      margin-bottom: 0.5rem;
+    }
+
+    .info-card .value {
+      font-size: 1.5rem;
+      font-weight: 700;
+    }
+
+    .info-card .value.danger { color: var(--red); }
+    .info-card .value.success { color: var(--green); }
+
+    /* Code Block */
+    .code-block {
+      background: var(--bg-deep);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 1rem;
+      margin-top: 1rem;
+      overflow-x: auto;
+      font-size: 0.8rem;
+    }
+
+    .code-block .comment { color: var(--text-muted); }
+    .code-block .keyword { color: var(--purple); }
+    .code-block .string { color: var(--green); }
+    .code-block .fn { color: var(--blue); }
+    .code-block .danger { color: var(--red); }
+
+    /* Comparison Table */
+    .comparison-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+      font-size: 0.85rem;
+    }
+
+    .comparison-table th,
+    .comparison-table td {
+      padding: 0.75rem;
+      border: 1px solid var(--border-subtle);
+      text-align: left;
+    }
+
+    .comparison-table th {
+      background: var(--bg-elevated);
+      font-weight: 600;
+    }
+
+    .comparison-table tr:nth-child(even) {
+      background: var(--bg-surface);
+    }
+
+    /* Responsive */
+    @media (max-width: 900px) {
+      .split-view {
+        flex-direction: column;
+      }
+      .split-sequence {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>speak v1.0 → v1.1</h1>
+      <p class="subtitle">The Streaming Saga: A Visual Autopsy</p>
+      <p class="quote">"The simplest explanation is usually the truth. But first, you have to understand the complexity you're simplifying."</p>
+    </header>
+
+    <nav class="scene-nav">
+      <button onclick="showScene(1)" class="active">1. The Dream</button>
+      <button onclick="showScene(2)">2. Bug #1: The Ghost</button>
+      <button onclick="showScene(3)">3. Bug #2: The Deadlock</button>
+      <button onclick="showScene(4)">4. The Truth</button>
+      <button onclick="showScene(5)">5. Redemption</button>
+    </nav>
+
+    <!-- Scene 1: The Dream -->
+    <section class="scene active" id="scene-1">
+      <div class="scene-header">
+        <span class="scene-badge setup">Scene 1</span>
+        <h2 class="scene-title">The Dream: Real-Time Audio Streaming</h2>
+        <p class="scene-desc">What we wanted: Text goes in, audio comes out immediately. Simple. Beautiful. Like water flowing downhill.</p>
+      </div>
+
+      <div class="split-view">
+        <div class="split-main">
+          <div class="canvas-container">
+            <div class="canvas-header">
+              <span class="canvas-title">The Ideal Flow</span>
+              <span class="canvas-status" id="status-1"><span class="status-dot paused"></span>Ready</span>
+            </div>
+            <svg class="canvas-svg" viewBox="0 0 800 400">
+              <defs>
+                <pattern id="grid1" width="20" height="20" patternUnits="userSpaceOnUse">
+                  <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#30363d" stroke-width="0.5" opacity="0.3"/>
+                </pattern>
+                <marker id="arrow1" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                  <path d="M0,0 L0,6 L9,3 z" fill="var(--green)"/>
+                </marker>
+                <filter id="glow1">
+                  <feGaussianBlur stdDeviation="3" result="blur"/>
+                  <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+              </defs>
+              
+              <rect width="100%" height="100%" fill="#161b22"/>
+              <rect width="100%" height="100%" fill="url(#grid1)"/>
+
+              <!-- Python Server -->
+              <g id="python-server-1">
+                <rect x="50" y="150" width="140" height="100" rx="8" fill="#21262d" stroke="var(--yellow)" stroke-width="2"/>
+                <text x="120" y="180" text-anchor="middle" fill="var(--yellow)" font-size="11" font-weight="600">Python Server</text>
+                <text x="120" y="200" text-anchor="middle" fill="var(--text-muted)" font-size="9">mlx-audio TTS</text>
+                <text x="120" y="220" text-anchor="middle" fill="var(--text-muted)" font-size="9">Chatterbox</text>
+              </g>
+
+              <!-- Arrow 1 -->
+              <path id="flow1-1" d="M 190 200 L 280 200" stroke="var(--green)" stroke-width="2" stroke-dasharray="6,4" opacity="0.3"/>
+
+              <!-- Socket -->
+              <g id="socket-1">
+                <rect x="280" y="160" width="100" height="80" rx="8" fill="#21262d" stroke="var(--blue)" stroke-width="2"/>
+                <text x="330" y="195" text-anchor="middle" fill="var(--blue)" font-size="11" font-weight="600">Unix Socket</text>
+                <text x="330" y="215" text-anchor="middle" fill="var(--text-muted)" font-size="9">Binary Protocol</text>
+              </g>
+
+              <!-- Arrow 2 -->
+              <path id="flow1-2" d="M 380 200 L 470 200" stroke="var(--green)" stroke-width="2" stroke-dasharray="6,4" opacity="0.3"/>
+
+              <!-- TypeScript Orchestrator -->
+              <g id="orchestrator-1">
+                <rect x="470" y="130" width="140" height="140" rx="8" fill="#21262d" stroke="var(--purple)" stroke-width="2"/>
+                <text x="540" y="160" text-anchor="middle" fill="var(--purple)" font-size="11" font-weight="600">Orchestrator</text>
+                <text x="540" y="180" text-anchor="middle" fill="var(--text-muted)" font-size="9">Ring Buffer</text>
+                
+                <!-- Buffer visualization -->
+                <rect x="490" y="195" width="100" height="20" rx="4" fill="#0d1117" stroke="var(--border-subtle)"/>
+                <rect id="buffer-fill-1" x="492" y="197" width="0" height="16" rx="3" fill="var(--green)"/>
+                <text x="540" y="235" text-anchor="middle" fill="var(--text-muted)" font-size="8" id="buffer-label-1">0s / 10s</text>
+              </g>
+
+              <!-- Arrow 3 -->
+              <path id="flow1-3" d="M 610 200 L 700 200" stroke="var(--green)" stroke-width="2" stroke-dasharray="6,4" opacity="0.3"/>
+
+              <!-- Speaker -->
+              <g id="speaker-1">
+                <rect x="700" y="160" width="80" height="80" rx="8" fill="#21262d" stroke="var(--green)" stroke-width="2"/>
+                <text x="740" y="195" text-anchor="middle" fill="var(--green)" font-size="11" font-weight="600">Speaker</text>
+                <text x="740" y="215" text-anchor="middle" fill="var(--text-muted)" font-size="9">🔊</text>
+              </g>
+
+              <!-- Data dots (initially hidden) -->
+              <circle id="dot1-1" cx="120" cy="200" r="6" fill="var(--green)" filter="url(#glow1)" opacity="0"/>
+              <circle id="dot1-2" cx="330" cy="200" r="6" fill="var(--green)" filter="url(#glow1)" opacity="0"/>
+              <circle id="dot1-3" cx="540" cy="200" r="6" fill="var(--green)" filter="url(#glow1)" opacity="0"/>
+
+              <!-- Title -->
+              <text x="400" y="50" text-anchor="middle" fill="var(--text-primary)" font-size="16" font-weight="600">The Dream: Continuous Flow</text>
+              <text x="400" y="75" text-anchor="middle" fill="var(--text-secondary)" font-size="12">Text → Audio → Ears, in real-time</text>
+
+              <!-- Sound waves (initially hidden) -->
+              <g id="soundwaves-1" opacity="0">
+                <path d="M 785 185 Q 795 200 785 215" stroke="var(--green)" stroke-width="2" fill="none"/>
+                <path d="M 795 175 Q 810 200 795 225" stroke="var(--green)" stroke-width="2" fill="none" opacity="0.7"/>
+                <path d="M 805 165 Q 825 200 805 235" stroke="var(--green)" stroke-width="2" fill="none" opacity="0.4"/>
+              </g>
+            </svg>
+            
+            <div class="controls">
+              <button class="control-btn primary" id="run-1" onclick="runScene1()">▶ Run</button>
+              <button class="control-btn" onclick="stepScene1()">⏭ Step</button>
+              <button class="control-btn" onclick="resetScene1()">↺ Reset</button>
+              <div class="progress-container">
+                <div class="progress-bar"><div class="progress-fill" id="progress-1"></div></div>
+                <span class="progress-label" id="progress-label-1">Step 0 of 5</span>
+              </div>
+              <div class="speed-control">
+                <span>Speed:</span>
+                <input type="range" id="speed-1" min="0.2" max="2" step="0.1" value="1" oninput="updateSpeedLabel(1)">
+                <span id="speed-label-1">1x</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="narration-box" id="narration-1">
+            <span class="step-num">0</span>
+            <span class="step-text">Press Run to see the dream in motion. This is what streaming audio should look like.</span>
+          </div>
+        </div>
+
+        <div class="split-sequence">
+          <div class="sequence-container">
+            <div class="sequence-title">Timeline</div>
+            <svg class="sequence-svg" viewBox="0 0 260 300">
+              <rect width="100%" height="100%" fill="#161b22"/>
+              
+              <!-- Participants -->
+              <rect x="30" y="20" width="50" height="24" rx="4" fill="#21262d" stroke="var(--yellow)" stroke-width="1.5"/>
+              <text x="55" y="36" text-anchor="middle" fill="var(--yellow)" font-size="9">Python</text>
+              
+              <rect x="105" y="20" width="50" height="24" rx="4" fill="#21262d" stroke="var(--purple)" stroke-width="1.5"/>
+              <text x="130" y="36" text-anchor="middle" fill="var(--purple)" font-size="9">TS</text>
+              
+              <rect x="180" y="20" width="50" height="24" rx="4" fill="#21262d" stroke="var(--green)" stroke-width="1.5"/>
+              <text x="205" y="36" text-anchor="middle" fill="var(--green)" font-size="9">Speaker</text>
+              
+              <!-- Lifelines -->
+              <line x1="55" y1="44" x2="55" y2="280" stroke="var(--border-subtle)" stroke-dasharray="4,4"/>
+              <line x1="130" y1="44" x2="130" y2="280" stroke="var(--border-subtle)" stroke-dasharray="4,4"/>
+              <line x1="205" y1="44" x2="205" y2="280" stroke="var(--border-subtle)" stroke-dasharray="4,4"/>
+              
+              <!-- Steps -->
+              <g id="seq1-1" class="seq-step">
+                <line x1="55" y1="70" x2="130" y2="70" stroke="var(--yellow)" stroke-width="1.5" marker-end="url(#arrow1)"/>
+                <text x="92" y="65" text-anchor="middle" fill="var(--yellow)" font-size="8">chunk 1</text>
+              </g>
+              
+              <g id="seq1-2" class="seq-step">
+                <line x1="130" y1="100" x2="205" y2="100" stroke="var(--green)" stroke-width="1.5" marker-end="url(#arrow1)"/>
+                <text x="167" y="95" text-anchor="middle" fill="var(--green)" font-size="8">play</text>
+              </g>
+              
+              <g id="seq1-3" class="seq-step">
+                <line x1="55" y1="130" x2="130" y2="130" stroke="var(--yellow)" stroke-width="1.5" marker-end="url(#arrow1)"/>
+                <text x="92" y="125" text-anchor="middle" fill="var(--yellow)" font-size="8">chunk 2</text>
+              </g>
+              
+              <g id="seq1-4" class="seq-step">
+                <line x1="130" y1="160" x2="205" y2="160" stroke="var(--green)" stroke-width="1.5" marker-end="url(#arrow1)"/>
+                <text x="167" y="155" text-anchor="middle" fill="var(--green)" font-size="8">play</text>
+              </g>
+              
+              <g id="seq1-5" class="seq-step">
+                <rect x="180" y="190" width="50" height="60" rx="4" fill="rgba(63, 185, 80, 0.2)" stroke="var(--green)" stroke-width="1.5"/>
+                <text x="205" y="225" text-anchor="middle" fill="var(--green)" font-size="10">🔊</text>
+              </g>
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="info-grid">
+        <div class="info-card success">
+          <h4>Latency to First Audio</h4>
+          <div class="value success">~3s</div>
+        </div>
+        <div class="info-card success">
+          <h4>Continuous Playback</h4>
+          <div class="value success">✓</div>
+        </div>
+        <div class="info-card success">
+          <h4>Long Content Support</h4>
+          <div class="value success">✓</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Scene 2: Bug #1 -->
+    <section class="scene" id="scene-2">
+      <div class="scene-header">
+        <span class="scene-badge problem">Scene 2</span>
+        <h2 class="scene-title">Bug #1: The Ghost in the Buffer</h2>
+        <p class="scene-desc">Users reported: "I can only hear the last word." The audio was there. The buffer was full. But something was eating the beginning.</p>
+      </div>
+
+      <div class="split-view">
+        <div class="split-main">
+          <div class="canvas-container">
+            <div class="canvas-header">
+              <span class="canvas-title">Buffer View Corruption</span>
+              <span class="canvas-status" id="status-2"><span class="status-dot paused"></span>Ready</span>
+            </div>
+            <svg class="canvas-svg" viewBox="0 0 800 450">
+              <defs>
+                <pattern id="grid2" width="20" height="20" patternUnits="userSpaceOnUse">
+                  <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#30363d" stroke-width="0.5" opacity="0.3"/>
+                </pattern>
+                <filter id="glow2">
+                  <feGaussianBlur stdDeviation="3" result="blur"/>
+                  <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+              </defs>
+              
+              <rect width="100%" height="100%" fill="#161b22"/>
+              <rect width="100%" height="100%" fill="url(#grid2)"/>
+
+              <!-- Title -->
+              <text x="400" y="40" text-anchor="middle" fill="var(--text-primary)" font-size="16" font-weight="600">The Ring Buffer & The Reused Array</text>
+
+              <!-- Float32Array (shared) -->
+              <g id="float32-array">
+                <rect x="50" y="80" width="300" height="60" rx="6" fill="#21262d" stroke="var(--orange)" stroke-width="2"/>
+                <text x="200" y="100" text-anchor="middle" fill="var(--orange)" font-size="11" font-weight="600">Float32Array chunk (reused)</text>
+                
+                <!-- Array cells -->
+                <g id="array-cells">
+                  <rect x="60" y="115" width="35" height="20" fill="#0d1117" stroke="var(--border-subtle)"/>
+                  <text id="cell-0" x="77" y="130" text-anchor="middle" fill="var(--green)" font-size="8">0.12</text>
+                  
+                  <rect x="95" y="115" width="35" height="20" fill="#0d1117" stroke="var(--border-subtle)"/>
+                  <text id="cell-1" x="112" y="130" text-anchor="middle" fill="var(--green)" font-size="8">0.34</text>
+                  
+                  <rect x="130" y="115" width="35" height="20" fill="#0d1117" stroke="var(--border-subtle)"/>
+                  <text id="cell-2" x="147" y="130" text-anchor="middle" fill="var(--green)" font-size="8">0.56</text>
+                  
+                  <rect x="165" y="115" width="35" height="20" fill="#0d1117" stroke="var(--border-subtle)"/>
+                  <text id="cell-3" x="182" y="130" text-anchor="middle" fill="var(--green)" font-size="8">0.78</text>
+                  
+                  <text x="220" y="130" fill="var(--text-muted)" font-size="10">...</text>
+                  
+                  <rect x="240" y="115" width="35" height="20" fill="#0d1117" stroke="var(--border-subtle)"/>
+                  <text id="cell-n" x="257" y="130" text-anchor="middle" fill="var(--green)" font-size="8">0.99</text>
+                  
+                  <rect x="275" y="115" width="35" height="20" fill="#0d1117" stroke="var(--border-subtle)"/>
+                  <text id="cell-n1" x="292" y="130" text-anchor="middle" fill="var(--green)" font-size="8">0.11</text>
+                </g>
+              </g>
+
+              <!-- Buffer.from() call -->
+              <g id="buffer-from" opacity="0">
+                <path d="M 200 145 L 200 175" stroke="var(--blue)" stroke-width="2" stroke-dasharray="4,4"/>
+                <text x="200" y="195" text-anchor="middle" fill="var(--blue)" font-size="10" font-weight="600">Buffer.from(chunk.buffer)</text>
+                <text x="200" y="210" text-anchor="middle" fill="var(--red)" font-size="9">← Creates VIEW, not copy!</text>
+              </g>
+
+              <!-- Speaker's Internal Queue -->
+              <g id="speaker-queue">
+                <rect x="450" y="80" width="300" height="140" rx="8" fill="#21262d" stroke="var(--green)" stroke-width="2"/>
+                <text x="600" y="105" text-anchor="middle" fill="var(--green)" font-size="11" font-weight="600">Speaker's Internal Buffer (queued)</text>
+                
+                <!-- Queued buffers -->
+                <g id="queued-buf-1" opacity="0">
+                  <rect x="470" y="120" width="120" height="35" rx="4" fill="#0d1117" stroke="var(--green)" stroke-width="1"/>
+                  <text x="530" y="142" text-anchor="middle" fill="var(--green)" font-size="9" id="buf1-text">"Hello there"</text>
+                  <text x="530" y="152" text-anchor="middle" fill="var(--text-muted)" font-size="7">waiting to play...</text>
+                </g>
+                
+                <g id="queued-buf-2" opacity="0">
+                  <rect x="470" y="165" width="120" height="35" rx="4" fill="#0d1117" stroke="var(--green)" stroke-width="1"/>
+                  <text x="530" y="187" text-anchor="middle" fill="var(--green)" font-size="9" id="buf2-text">"my friend"</text>
+                </g>
+              </g>
+
+              <!-- The Problem -->
+              <g id="corruption-viz" opacity="0">
+                <rect x="470" y="120" width="120" height="35" rx="4" fill="rgba(248, 81, 73, 0.3)" stroke="var(--red)" stroke-width="2"/>
+                <text x="530" y="137" text-anchor="middle" fill="var(--red)" font-size="9" font-weight="600">CORRUPTED!</text>
+                <text x="530" y="152" text-anchor="middle" fill="var(--red)" font-size="8">Now contains: "my friend"</text>
+                
+                <!-- Corruption arrow -->
+                <path d="M 200 145 C 200 250 350 280 465 155" stroke="var(--red)" stroke-width="2" stroke-dasharray="6,3" fill="none" marker-end="url(#arrow-red)"/>
+                <text x="330" y="270" text-anchor="middle" fill="var(--red)" font-size="10">Same underlying ArrayBuffer!</text>
+              </g>
+
+              <defs>
+                <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                  <path d="M0,0 L0,6 L9,3 z" fill="var(--red)"/>
+                </marker>
+              </defs>
+
+              <!-- Timeline -->
+              <g id="timeline-2">
+                <line x1="100" y1="350" x2="700" y2="350" stroke="var(--border-subtle)" stroke-width="2"/>
+                
+                <g id="t1-marker" opacity="0">
+                  <circle cx="150" cy="350" r="8" fill="var(--green)"/>
+                  <text x="150" y="380" text-anchor="middle" fill="var(--text-secondary)" font-size="9">Read chunk 1</text>
+                  <text x="150" y="395" text-anchor="middle" fill="var(--green)" font-size="8">"Hello there"</text>
+                </g>
+                
+                <g id="t2-marker" opacity="0">
+                  <circle cx="300" cy="350" r="8" fill="var(--blue)"/>
+                  <text x="300" y="380" text-anchor="middle" fill="var(--text-secondary)" font-size="9">Push to speaker</text>
+                  <text x="300" y="395" text-anchor="middle" fill="var(--blue)" font-size="8">(view of chunk)</text>
+                </g>
+                
+                <g id="t3-marker" opacity="0">
+                  <circle cx="450" cy="350" r="8" fill="var(--orange)"/>
+                  <text x="450" y="380" text-anchor="middle" fill="var(--text-secondary)" font-size="9">Read chunk 2</text>
+                  <text x="450" y="395" text-anchor="middle" fill="var(--orange)" font-size="8">"my friend"</text>
+                </g>
+                
+                <g id="t4-marker" opacity="0">
+                  <circle cx="600" cy="350" r="8" fill="var(--red)"/>
+                  <text x="600" y="380" text-anchor="middle" fill="var(--text-secondary)" font-size="9">Chunk 1 plays</text>
+                  <text x="600" y="395" text-anchor="middle" fill="var(--red)" font-size="8">But it's now "my friend"!</text>
+                </g>
+              </g>
+
+              <!-- Result -->
+              <g id="result-2" opacity="0">
+                <rect x="550" y="250" width="200" height="60" rx="8" fill="rgba(248, 81, 73, 0.2)" stroke="var(--red)" stroke-width="2"/>
+                <text x="650" y="275" text-anchor="middle" fill="var(--red)" font-size="12" font-weight="600">User hears:</text>
+                <text x="650" y="295" text-anchor="middle" fill="var(--text-primary)" font-size="14">"my friend" (only)</text>
+              </g>
+            </svg>
+            
+            <div class="controls">
+              <button class="control-btn primary" id="run-2" onclick="runScene2()">▶ Run</button>
+              <button class="control-btn" onclick="stepScene2()">⏭ Step</button>
+              <button class="control-btn" onclick="resetScene2()">↺ Reset</button>
+              <div class="progress-container">
+                <div class="progress-bar"><div class="progress-fill" id="progress-2"></div></div>
+                <span class="progress-label" id="progress-label-2">Step 0 of 6</span>
+              </div>
+              <div class="speed-control">
+                <span>Speed:</span>
+                <input type="range" id="speed-2" min="0.2" max="2" step="0.1" value="1" oninput="updateSpeedLabel(2)">
+                <span id="speed-label-2">1x</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="narration-box" id="narration-2">
+            <span class="step-num">0</span>
+            <span class="step-text">Watch how a single reused array causes audio to vanish. The speaker's queue holds views, not copies.</span>
+          </div>
+
+          <div class="code-block">
+            <span class="comment">// THE BUG: Buffer.from() creates a VIEW</span><br>
+            <span class="keyword">const</span> chunk = <span class="keyword">new</span> <span class="fn">Float32Array</span>(1024); <span class="comment">// Reused!</span><br><br>
+            <span class="fn">read</span>: () => {<br>
+            &nbsp;&nbsp;buffer.<span class="fn">read</span>(chunk); <span class="comment">// Fill with audio data</span><br>
+            &nbsp;&nbsp;<span class="keyword">const</span> buf = <span class="fn">Buffer.from</span>(chunk.buffer); <span class="danger">// VIEW, not copy!</span><br>
+            &nbsp;&nbsp;readable.<span class="fn">push</span>(buf); <span class="comment">// Push to speaker queue</span><br>
+            }<br><br>
+            <span class="comment">// Next read() overwrites chunk → corrupts queued buffer!</span>
+          </div>
+        </div>
+
+        <div class="split-sequence">
+          <div class="sequence-container">
+            <div class="sequence-title">Memory Timeline</div>
+            <svg class="sequence-svg" viewBox="0 0 260 350">
+              <rect width="100%" height="100%" fill="#161b22"/>
+              
+              <!-- Memory diagram -->
+              <text x="130" y="30" text-anchor="middle" fill="var(--text-primary)" font-size="10" font-weight="600">ArrayBuffer Memory</text>
+              
+              <g id="mem-step-1" class="seq-step">
+                <rect x="30" y="50" width="200" height="40" rx="4" fill="#21262d" stroke="var(--green)" stroke-width="1.5"/>
+                <text x="130" y="75" text-anchor="middle" fill="var(--green)" font-size="9">"Hello there my..."</text>
+                <text x="20" y="70" text-anchor="end" fill="var(--text-muted)" font-size="8">t1</text>
+              </g>
+              
+              <g id="mem-step-2" class="seq-step">
+                <rect x="30" y="100" width="200" height="40" rx="4" fill="#21262d" stroke="var(--blue)" stroke-width="1.5"/>
+                <text x="130" y="120" text-anchor="middle" fill="var(--blue)" font-size="8">Buffer VIEW created</text>
+                <text x="130" y="132" text-anchor="middle" fill="var(--text-muted)" font-size="7">→ pushed to speaker</text>
+                <text x="20" y="120" text-anchor="end" fill="var(--text-muted)" font-size="8">t2</text>
+              </g>
+              
+              <g id="mem-step-3" class="seq-step">
+                <rect x="30" y="150" width="200" height="40" rx="4" fill="#21262d" stroke="var(--orange)" stroke-width="1.5"/>
+                <text x="130" y="170" text-anchor="middle" fill="var(--orange)" font-size="9">"my friend" overwrites!</text>
+                <text x="130" y="182" text-anchor="middle" fill="var(--text-muted)" font-size="7">Same ArrayBuffer</text>
+                <text x="20" y="170" text-anchor="end" fill="var(--text-muted)" font-size="8">t3</text>
+              </g>
+              
+              <g id="mem-step-4" class="seq-step">
+                <rect x="30" y="200" width="200" height="40" rx="4" fill="rgba(248, 81, 73, 0.3)" stroke="var(--red)" stroke-width="2"/>
+                <text x="130" y="220" text-anchor="middle" fill="var(--red)" font-size="9">Speaker plays VIEW</text>
+                <text x="130" y="232" text-anchor="middle" fill="var(--red)" font-size="7">But it's "my friend" now!</text>
+                <text x="20" y="220" text-anchor="end" fill="var(--text-muted)" font-size="8">t4</text>
+              </g>
+              
+              <g id="mem-step-5" class="seq-step">
+                <rect x="30" y="260" width="200" height="50" rx="4" fill="rgba(63, 185, 80, 0.2)" stroke="var(--green)" stroke-width="1.5"/>
+                <text x="130" y="280" text-anchor="middle" fill="var(--green)" font-size="9" font-weight="600">FIX: Buffer.alloc()</text>
+                <text x="130" y="295" text-anchor="middle" fill="var(--text-secondary)" font-size="7">Copy data, don't view it</text>
+              </g>
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="info-grid">
+        <div class="info-card danger">
+          <h4>Symptom</h4>
+          <div class="value danger">Audio Cut Off</div>
+        </div>
+        <div class="info-card danger">
+          <h4>Root Cause</h4>
+          <div class="value" style="font-size: 1rem; color: var(--text-primary);">Buffer.from() creates VIEW</div>
+        </div>
+        <div class="info-card success">
+          <h4>Fix</h4>
+          <div class="value" style="font-size: 1rem; color: var(--green);">Buffer.alloc() + copy</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Scene 3: Bug #2 -->
+    <section class="scene" id="scene-3">
+      <div class="scene-header">
+        <span class="scene-badge problem">Scene 3</span>
+        <h2 class="scene-title">Bug #2: The Deadlock</h2>
+        <p class="scene-desc">For long content, streaming hung forever. The socket was waiting. The buffer was waiting. Everyone was waiting. No one was moving.</p>
+      </div>
+
+      <div class="split-view">
+        <div class="split-main">
+          <div class="canvas-container">
+            <div class="canvas-header">
+              <span class="canvas-title">The Deadly Embrace</span>
+              <span class="canvas-status" id="status-3"><span class="status-dot paused"></span>Ready</span>
+            </div>
+            <svg class="canvas-svg" viewBox="0 0 800 500">
+              <defs>
+                <pattern id="grid3" width="20" height="20" patternUnits="userSpaceOnUse">
+                  <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#30363d" stroke-width="0.5" opacity="0.3"/>
+                </pattern>
+                <filter id="glow3">
+                  <feGaussianBlur stdDeviation="4" result="blur"/>
+                  <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+              </defs>
+              
+              <rect width="100%" height="100%" fill="#161b22"/>
+              <rect width="100%" height="100%" fill="url(#grid3)"/>
+
+              <!-- Title -->
+              <text x="400" y="35" text-anchor="middle" fill="var(--text-primary)" font-size="16" font-weight="600">The Async Generator Trap</text>
+
+              <!-- Python Server -->
+              <g id="python-3">
+                <rect x="50" y="100" width="160" height="120" rx="8" fill="#21262d" stroke="var(--yellow)" stroke-width="2"/>
+                <text x="130" y="130" text-anchor="middle" fill="var(--yellow)" font-size="11" font-weight="600">Python Server</text>
+                
+                <!-- Chunks generated -->
+                <text x="130" y="155" text-anchor="middle" fill="var(--text-muted)" font-size="9">Generating chunks...</text>
+                <g id="py-chunks">
+                  <rect x="70" y="165" width="30" height="20" rx="3" fill="var(--green)" id="py-c1"/>
+                  <rect x="105" y="165" width="30" height="20" rx="3" fill="var(--green)" id="py-c2"/>
+                  <rect x="140" y="165" width="30" height="20" rx="3" fill="var(--green)" id="py-c3"/>
+                  <rect x="175" y="165" width="0" height="20" rx="3" fill="var(--text-muted)" id="py-c4"/>
+                </g>
+                <text x="130" y="205" text-anchor="middle" fill="var(--text-muted)" font-size="8" id="py-status">Ready to send</text>
+              </g>
+
+              <!-- Socket (the bottleneck) -->
+              <g id="socket-3">
+                <rect x="280" y="80" width="120" height="160" rx="8" fill="#21262d" stroke="var(--blue)" stroke-width="2"/>
+                <text x="340" y="105" text-anchor="middle" fill="var(--blue)" font-size="11" font-weight="600">Unix Socket</text>
+                
+                <!-- Socket buffer visualization -->
+                <rect x="295" y="120" width="90" height="100" rx="4" fill="#0d1117" stroke="var(--border-subtle)"/>
+                <text x="340" y="140" text-anchor="middle" fill="var(--text-muted)" font-size="8">Socket Buffer</text>
+                
+                <g id="socket-data">
+                  <rect x="300" y="150" width="80" height="15" rx="2" fill="var(--green)" id="sock-c1" opacity="0"/>
+                  <rect x="300" y="170" width="80" height="15" rx="2" fill="var(--green)" id="sock-c2" opacity="0"/>
+                  <rect x="300" y="190" width="80" height="15" rx="2" fill="var(--green)" id="sock-c3" opacity="0"/>
+                </g>
+              </g>
+
+              <!-- TypeScript Side -->
+              <g id="typescript-3">
+                <rect x="470" y="60" width="280" height="220" rx="8" fill="#21262d" stroke="var(--purple)" stroke-width="2"/>
+                <text x="610" y="85" text-anchor="middle" fill="var(--purple)" font-size="11" font-weight="600">TypeScript Orchestrator</text>
+
+                <!-- for await loop -->
+                <g id="for-await-box">
+                  <rect x="485" y="100" width="250" height="70" rx="6" fill="#0d1117" stroke="var(--orange)" stroke-width="1.5"/>
+                  <text x="610" y="120" text-anchor="middle" fill="var(--orange)" font-size="10" font-weight="600">for await (msg of readBinaryStream)</text>
+                  <text x="610" y="140" text-anchor="middle" fill="var(--text-muted)" font-size="9" id="for-await-status">Waiting for message...</text>
+                  <circle id="for-await-spinner" cx="500" cy="135" r="6" fill="none" stroke="var(--orange)" stroke-width="2" stroke-dasharray="10,5" opacity="0">
+                    <animateTransform attributeName="transform" type="rotate" from="0 500 135" to="360 500 135" dur="1s" repeatCount="indefinite"/>
+                  </circle>
+                </g>
+
+                <!-- handleChunk -->
+                <g id="handle-chunk-box">
+                  <rect x="485" y="180" width="250" height="90" rx="6" fill="#0d1117" stroke="var(--cyan)" stroke-width="1.5"/>
+                  <text x="610" y="200" text-anchor="middle" fill="var(--cyan)" font-size="10" font-weight="600">await handleChunk()</text>
+                  
+                  <!-- Ring buffer -->
+                  <rect x="500" y="210" width="120" height="20" rx="3" fill="#161b22" stroke="var(--border-subtle)"/>
+                  <rect id="ring-fill-3" x="502" y="212" width="0" height="16" rx="2" fill="var(--green)"/>
+                  <text x="560" y="250" text-anchor="middle" fill="var(--text-muted)" font-size="8" id="ring-status-3">Buffer: 0s / 10s</text>
+                  
+                  <!-- Blocked indicator -->
+                  <g id="blocked-indicator" opacity="0">
+                    <rect x="640" y="205" width="80" height="50" rx="4" fill="rgba(248, 81, 73, 0.3)" stroke="var(--red)" stroke-width="2"/>
+                    <text x="680" y="225" text-anchor="middle" fill="var(--red)" font-size="9" font-weight="600">BLOCKED</text>
+                    <text x="680" y="240" text-anchor="middle" fill="var(--red)" font-size="7">Waiting for</text>
+                    <text x="680" y="250" text-anchor="middle" fill="var(--red)" font-size="7">buffer drain</text>
+                  </g>
+                </g>
+              </g>
+
+              <!-- The Deadlock Arrows -->
+              <g id="deadlock-arrows" opacity="0">
+                <!-- Socket waiting for TS to read -->
+                <path d="M 400 180 C 430 180 430 140 470 140" stroke="var(--red)" stroke-width="3" fill="none" marker-end="url(#arrow-red2)"/>
+                <text x="435" y="130" fill="var(--red)" font-size="8" font-weight="600">Can't deliver</text>
+                <text x="435" y="142" fill="var(--red)" font-size="7">TS not reading!</text>
+                
+                <!-- TS waiting for buffer -->
+                <path d="M 620 270 C 620 320 680 320 680 380" stroke="var(--red)" stroke-width="3" fill="none" marker-end="url(#arrow-red2)"/>
+                <text x="700" y="340" fill="var(--red)" font-size="8" font-weight="600">Waiting for</text>
+                <text x="700" y="352" fill="var(--red)" font-size="7">playback</text>
+                
+                <!-- Speaker not getting data -->
+                <path d="M 400 430 C 300 430 300 380 400 380" stroke="var(--red)" stroke-width="3" fill="none"/>
+                <text x="350" y="420" text-anchor="middle" fill="var(--red)" font-size="8">No new data!</text>
+              </g>
+
+              <defs>
+                <marker id="arrow-red2" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                  <path d="M0,0 L0,6 L9,3 z" fill="var(--red)"/>
+                </marker>
+              </defs>
+
+              <!-- Speaker -->
+              <g id="speaker-3">
+                <rect x="520" y="360" width="160" height="80" rx="8" fill="#21262d" stroke="var(--green)" stroke-width="2"/>
+                <text x="600" y="390" text-anchor="middle" fill="var(--green)" font-size="11" font-weight="600">Speaker</text>
+                <text x="600" y="415" text-anchor="middle" fill="var(--text-muted)" font-size="9" id="speaker-status-3">Playing buffer...</text>
+                
+                <!-- Buffer drain visualization -->
+                <rect x="540" y="425" width="120" height="8" rx="2" fill="#0d1117" stroke="var(--border-subtle)"/>
+                <rect id="speaker-drain-3" x="542" y="427" width="116" height="4" rx="1" fill="var(--green)"/>
+              </g>
+
+              <!-- Problem statement -->
+              <g id="problem-box-3" opacity="0">
+                <rect x="50" y="340" width="200" height="100" rx="8" fill="rgba(248, 81, 73, 0.15)" stroke="var(--red)" stroke-width="2"/>
+                <text x="150" y="370" text-anchor="middle" fill="var(--red)" font-size="12" font-weight="600">DEADLOCK!</text>
+                <text x="150" y="395" text-anchor="middle" fill="var(--text-primary)" font-size="9">for await blocks on handleChunk</text>
+                <text x="150" y="410" text-anchor="middle" fill="var(--text-primary)" font-size="9">handleChunk blocks on buffer</text>
+                <text x="150" y="425" text-anchor="middle" fill="var(--text-primary)" font-size="9">Socket has data, can't deliver</text>
+              </g>
+
+              <!-- Time indicator -->
+              <g id="time-indicator-3">
+                <text x="750" y="480" text-anchor="end" fill="var(--text-muted)" font-size="10" id="time-3">t = 0s</text>
+              </g>
+            </svg>
+            
+            <div class="controls">
+              <button class="control-btn primary" id="run-3" onclick="runScene3()">▶ Run</button>
+              <button class="control-btn" onclick="stepScene3()">⏭ Step</button>
+              <button class="control-btn" onclick="resetScene3()">↺ Reset</button>
+              <div class="progress-container">
+                <div class="progress-bar"><div class="progress-fill" id="progress-3"></div></div>
+                <span class="progress-label" id="progress-label-3">Step 0 of 8</span>
+              </div>
+              <div class="speed-control">
+                <span>Speed:</span>
+                <input type="range" id="speed-3" min="0.2" max="2" step="0.1" value="1" oninput="updateSpeedLabel(3)">
+                <span id="speed-label-3">1x</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="narration-box" id="narration-3">
+            <span class="step-num">0</span>
+            <span class="step-text">Watch the system freeze as each component waits for another. This is the deadlock that killed long-form streaming.</span>
+          </div>
+        </div>
+
+        <div class="split-sequence">
+          <div class="sequence-container">
+            <div class="sequence-title">The Fatal Sequence</div>
+            <svg class="sequence-svg" viewBox="0 0 260 400">
+              <rect width="100%" height="100%" fill="#161b22"/>
+              
+              <!-- Participants -->
+              <rect x="20" y="20" width="45" height="24" rx="4" fill="#21262d" stroke="var(--yellow)" stroke-width="1.5"/>
+              <text x="42" y="36" text-anchor="middle" fill="var(--yellow)" font-size="8">Python</text>
+              
+              <rect x="75" y="20" width="45" height="24" rx="4" fill="#21262d" stroke="var(--blue)" stroke-width="1.5"/>
+              <text x="97" y="36" text-anchor="middle" fill="var(--blue)" font-size="8">Socket</text>
+              
+              <rect x="130" y="20" width="45" height="24" rx="4" fill="#21262d" stroke="var(--purple)" stroke-width="1.5"/>
+              <text x="152" y="36" text-anchor="middle" fill="var(--purple)" font-size="8">for await</text>
+              
+              <rect x="185" y="20" width="55" height="24" rx="4" fill="#21262d" stroke="var(--cyan)" stroke-width="1.5"/>
+              <text x="212" y="36" text-anchor="middle" fill="var(--cyan)" font-size="8">handleChunk</text>
+              
+              <!-- Lifelines -->
+              <line x1="42" y1="44" x2="42" y2="380" stroke="var(--border-subtle)" stroke-dasharray="4,4"/>
+              <line x1="97" y1="44" x2="97" y2="380" stroke="var(--border-subtle)" stroke-dasharray="4,4"/>
+              <line x1="152" y1="44" x2="152" y2="380" stroke="var(--border-subtle)" stroke-dasharray="4,4"/>
+              <line x1="212" y1="44" x2="212" y2="380" stroke="var(--border-subtle)" stroke-dasharray="4,4"/>
+              
+              <!-- Steps -->
+              <g id="seq3-1" class="seq-step">
+                <line x1="42" y1="65" x2="97" y2="65" stroke="var(--yellow)" stroke-width="1.5"/>
+                <text x="70" y="60" text-anchor="middle" fill="var(--yellow)" font-size="7">chunk 1</text>
+              </g>
+              
+              <g id="seq3-2" class="seq-step">
+                <line x1="97" y1="85" x2="152" y2="85" stroke="var(--blue)" stroke-width="1.5"/>
+                <text x="125" y="80" text-anchor="middle" fill="var(--blue)" font-size="7">yield</text>
+              </g>
+              
+              <g id="seq3-3" class="seq-step">
+                <line x1="152" y1="105" x2="212" y2="105" stroke="var(--purple)" stroke-width="1.5"/>
+                <text x="182" y="100" text-anchor="middle" fill="var(--purple)" font-size="7">process</text>
+              </g>
+              
+              <g id="seq3-4" class="seq-step">
+                <rect x="195" y="115" width="35" height="80" rx="3" fill="rgba(57, 212, 232, 0.2)" stroke="var(--cyan)" stroke-width="1"/>
+                <text x="212" y="155" text-anchor="middle" fill="var(--cyan)" font-size="7" transform="rotate(-90 212 155)">await buffer</text>
+              </g>
+              
+              <g id="seq3-5" class="seq-step">
+                <line x1="42" y1="140" x2="97" y2="140" stroke="var(--yellow)" stroke-width="1.5"/>
+                <text x="70" y="135" text-anchor="middle" fill="var(--yellow)" font-size="7">chunk 2</text>
+              </g>
+              
+              <g id="seq3-6" class="seq-step">
+                <rect x="80" y="150" width="35" height="50" rx="3" fill="rgba(248, 81, 73, 0.3)" stroke="var(--red)" stroke-width="1"/>
+                <text x="97" y="180" text-anchor="middle" fill="var(--red)" font-size="7">QUEUED</text>
+              </g>
+              
+              <g id="seq3-7" class="seq-step">
+                <rect x="135" y="115" width="35" height="120" rx="3" fill="rgba(248, 81, 73, 0.3)" stroke="var(--red)" stroke-width="2"/>
+                <text x="152" y="180" text-anchor="middle" fill="var(--red)" font-size="7" transform="rotate(-90 152 180)">BLOCKED!</text>
+              </g>
+              
+              <g id="seq3-8" class="seq-step">
+                <line x1="42" y1="260" x2="97" y2="260" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="4,4"/>
+                <text x="70" y="255" text-anchor="middle" fill="var(--red)" font-size="7">timeout!</text>
+                
+                <rect x="30" y="280" width="200" height="60" rx="4" fill="rgba(248, 81, 73, 0.2)" stroke="var(--red)" stroke-width="1"/>
+                <text x="130" y="305" text-anchor="middle" fill="var(--red)" font-size="9" font-weight="600">DEADLOCK</text>
+                <text x="130" y="320" text-anchor="middle" fill="var(--text-secondary)" font-size="7">Socket closes, stream fails</text>
+              </g>
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="info-grid">
+        <div class="info-card danger">
+          <h4>Symptom</h4>
+          <div class="value danger">Infinite Hang</div>
+        </div>
+        <div class="info-card danger">
+          <h4>Content Length</h4>
+          <div class="value" style="font-size: 1.2rem; color: var(--text-primary);">> 2KB / 10s audio</div>
+        </div>
+        <div class="info-card">
+          <h4>Root Cause</h4>
+          <div class="value" style="font-size: 0.9rem; color: var(--text-primary);">for await blocks on async generator</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Scene 4: The Truth -->
+    <section class="scene" id="scene-4">
+      <div class="scene-header">
+        <span class="scene-badge analysis">Scene 4</span>
+        <h2 class="scene-title">The Truth: Two Simple Principles</h2>
+        <p class="scene-desc">Strip away the complexity. What are we really dealing with?</p>
+      </div>
+
+      <div class="canvas-container" style="max-width: 900px; margin: 0 auto;">
+        <div class="canvas-header">
+          <span class="canvas-title">First Principles</span>
+        </div>
+        <svg class="canvas-svg" viewBox="0 0 900 400">
+          <rect width="100%" height="100%" fill="#161b22"/>
+          
+          <!-- Principle 1 -->
+          <g>
+            <rect x="50" y="50" width="380" height="140" rx="12" fill="#21262d" stroke="var(--red)" stroke-width="3"/>
+            <text x="240" y="90" text-anchor="middle" fill="var(--red)" font-size="18" font-weight="700">Principle 1</text>
+            <text x="240" y="120" text-anchor="middle" fill="var(--text-primary)" font-size="14">Views share memory.</text>
+            <text x="240" y="145" text-anchor="middle" fill="var(--text-primary)" font-size="14">When you modify the source,</text>
+            <text x="240" y="170" text-anchor="middle" fill="var(--text-primary)" font-size="14">you modify all views.</text>
+          </g>
+
+          <!-- Principle 2 -->
+          <g>
+            <rect x="470" y="50" width="380" height="140" rx="12" fill="#21262d" stroke="var(--red)" stroke-width="3"/>
+            <text x="660" y="90" text-anchor="middle" fill="var(--red)" font-size="18" font-weight="700">Principle 2</text>
+            <text x="660" y="120" text-anchor="middle" fill="var(--text-primary)" font-size="14">Async generators yield control</text>
+            <text x="660" y="145" text-anchor="middle" fill="var(--text-primary)" font-size="14">only when awaited.</text>
+            <text x="660" y="170" text-anchor="middle" fill="var(--text-primary)" font-size="14">Block the consumer, block the producer.</text>
+          </g>
+
+          <!-- Arrow down -->
+          <path d="M 450 210 L 450 250" stroke="var(--text-muted)" stroke-width="3" marker-end="url(#arrow-white)"/>
+          
+          <defs>
+            <marker id="arrow-white" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L9,3 z" fill="var(--text-muted)"/>
+            </marker>
+          </defs>
+
+          <!-- Solutions -->
+          <g>
+            <rect x="50" y="270" width="380" height="100" rx="12" fill="#21262d" stroke="var(--green)" stroke-width="3"/>
+            <text x="240" y="305" text-anchor="middle" fill="var(--green)" font-size="16" font-weight="700">Solution 1: Copy</text>
+            <text x="240" y="335" text-anchor="middle" fill="var(--text-primary)" font-size="13">Buffer.alloc() + manual copy</text>
+            <text x="240" y="355" text-anchor="middle" fill="var(--text-muted)" font-size="11">Each push gets its own memory</text>
+          </g>
+
+          <g>
+            <rect x="470" y="270" width="380" height="100" rx="12" fill="#21262d" stroke="var(--green)" stroke-width="3"/>
+            <text x="660" y="305" text-anchor="middle" fill="var(--green)" font-size="16" font-weight="700">Solution 2: Decouple</text>
+            <text x="660" y="335" text-anchor="middle" fill="var(--text-primary)" font-size="13">Producer-Consumer pattern</text>
+            <text x="660" y="355" text-anchor="middle" fill="var(--text-muted)" font-size="11">Reader and processor run in parallel</text>
+          </g>
+        </svg>
+      </div>
+
+      <div class="code-block" style="max-width: 900px; margin: 1.5rem auto;">
+        <span class="comment">// Bug #1 Fix: Copy instead of view</span><br>
+        <span class="keyword">const</span> buf = <span class="fn">Buffer.alloc</span>(samplesRead * 4);<br>
+        <span class="keyword">for</span> (<span class="keyword">let</span> i = 0; i < samplesRead; i++) {<br>
+        &nbsp;&nbsp;buf.<span class="fn">writeFloatLE</span>(chunk[i], i * 4);<br>
+        }<br>
+        readable.<span class="fn">push</span>(buf); <span class="comment">// Now it's truly independent</span><br>
+        <br>
+        <span class="comment">// Bug #2 Fix: Producer-Consumer</span><br>
+        <span class="keyword">const</span> queue = [];<br>
+        <span class="keyword">const</span> readPromise = (<span class="keyword">async</span> () => {<br>
+        &nbsp;&nbsp;<span class="keyword">for await</span> (<span class="keyword">const</span> msg <span class="keyword">of</span> <span class="fn">readBinaryStream</span>(socket)) {<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;queue.<span class="fn">push</span>(msg); <span class="comment">// Non-blocking!</span><br>
+        &nbsp;&nbsp;}<br>
+        })();<br>
+        <br>
+        <span class="comment">// Consumer runs independently</span><br>
+        <span class="keyword">while</span> (!done || queue.length > 0) {<br>
+        &nbsp;&nbsp;<span class="keyword">if</span> (queue.length > 0) <span class="keyword">await</span> <span class="fn">handleChunk</span>(queue.<span class="fn">shift</span>());<br>
+        &nbsp;&nbsp;<span class="keyword">else await</span> <span class="fn">sleep</span>(10);<br>
+        }
+      </div>
+    </section>
+
+    <!-- Scene 5: Redemption -->
+    <section class="scene" id="scene-5">
+      <div class="scene-header">
+        <span class="scene-badge victory">Scene 5</span>
+        <h2 class="scene-title">Redemption: v1.1 in Action</h2>
+        <p class="scene-desc">149 seconds of audio. 14 chunks. Zero hangs. The system flows like water.</p>
+      </div>
+
+      <div class="split-view">
+        <div class="split-main">
+          <div class="canvas-container">
+            <div class="canvas-header">
+              <span class="canvas-title">Producer-Consumer Flow</span>
+              <span class="canvas-status" id="status-5"><span class="status-dot paused"></span>Ready</span>
+            </div>
+            <svg class="canvas-svg" viewBox="0 0 800 400">
+              <defs>
+                <pattern id="grid5" width="20" height="20" patternUnits="userSpaceOnUse">
+                  <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#30363d" stroke-width="0.5" opacity="0.3"/>
+                </pattern>
+                <filter id="glow5">
+                  <feGaussianBlur stdDeviation="3" result="blur"/>
+                  <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+              </defs>
+              
+              <rect width="100%" height="100%" fill="#161b22"/>
+              <rect width="100%" height="100%" fill="url(#grid5)"/>
+
+              <!-- Title -->
+              <text x="400" y="35" text-anchor="middle" fill="var(--text-primary)" font-size="16" font-weight="600">Parallel Producer-Consumer: The Fix</text>
+
+              <!-- Python -->
+              <g id="py-5">
+                <rect x="30" y="80" width="120" height="100" rx="8" fill="#21262d" stroke="var(--yellow)" stroke-width="2"/>
+                <text x="90" y="110" text-anchor="middle" fill="var(--yellow)" font-size="11" font-weight="600">Python</text>
+                <text x="90" y="130" text-anchor="middle" fill="var(--green)" font-size="10" id="py-5-status">Generating...</text>
+                <text x="90" y="155" text-anchor="middle" fill="var(--text-muted)" font-size="9" id="py-5-chunks">0 chunks sent</text>
+              </g>
+
+              <!-- Producer (socket reader) -->
+              <g id="producer-5">
+                <rect x="200" y="60" width="160" height="140" rx="8" fill="#21262d" stroke="var(--blue)" stroke-width="2"/>
+                <text x="280" y="90" text-anchor="middle" fill="var(--blue)" font-size="11" font-weight="600">Producer</text>
+                <text x="280" y="110" text-anchor="middle" fill="var(--text-muted)" font-size="9">(Socket Reader)</text>
+                
+                <!-- Queue -->
+                <rect x="215" y="125" width="130" height="60" rx="4" fill="#0d1117" stroke="var(--border-subtle)"/>
+                <text x="280" y="145" text-anchor="middle" fill="var(--text-muted)" font-size="8">Chunk Queue</text>
+                
+                <!-- Queue items -->
+                <g id="queue-items-5">
+                </g>
+                <text x="280" y="175" text-anchor="middle" fill="var(--text-secondary)" font-size="9" id="queue-count-5">0 queued</text>
+              </g>
+
+              <!-- Consumer -->
+              <g id="consumer-5">
+                <rect x="420" y="60" width="160" height="140" rx="8" fill="#21262d" stroke="var(--purple)" stroke-width="2"/>
+                <text x="500" y="90" text-anchor="middle" fill="var(--purple)" font-size="11" font-weight="600">Consumer</text>
+                <text x="500" y="110" text-anchor="middle" fill="var(--text-muted)" font-size="9">(Chunk Processor)</text>
+                
+                <!-- Buffer -->
+                <rect x="435" y="130" width="130" height="20" rx="4" fill="#0d1117" stroke="var(--border-subtle)"/>
+                <rect id="buf-fill-5" x="437" y="132" width="0" height="16" rx="3" fill="var(--green)"/>
+                <text x="500" y="170" text-anchor="middle" fill="var(--text-muted)" font-size="8" id="buf-5-label">Buffer: 0s</text>
+                <text x="500" y="185" text-anchor="middle" fill="var(--text-secondary)" font-size="9" id="chunks-processed-5">0 processed</text>
+              </g>
+
+              <!-- Speaker -->
+              <g id="speaker-5">
+                <rect x="640" y="80" width="120" height="100" rx="8" fill="#21262d" stroke="var(--green)" stroke-width="2"/>
+                <text x="700" y="110" text-anchor="middle" fill="var(--green)" font-size="11" font-weight="600">Speaker</text>
+                <text x="700" y="130" text-anchor="middle" fill="var(--text-muted)" font-size="9" id="speaker-5-status">Ready</text>
+                
+                <!-- Sound waves -->
+                <g id="waves-5" opacity="0">
+                  <path d="M 765 115 Q 775 130 765 145" stroke="var(--green)" stroke-width="2" fill="none"/>
+                  <path d="M 775 105 Q 790 130 775 155" stroke="var(--green)" stroke-width="2" fill="none" opacity="0.7"/>
+                </g>
+              </g>
+
+              <!-- Flow arrows -->
+              <path d="M 150 130 L 195 130" stroke="var(--yellow)" stroke-width="2" marker-end="url(#arr-y)"/>
+              <path d="M 365 130 L 415 130" stroke="var(--purple)" stroke-width="2" marker-end="url(#arr-p)"/>
+              <path d="M 585 130 L 635 130" stroke="var(--green)" stroke-width="2" marker-end="url(#arr-g)"/>
+
+              <defs>
+                <marker id="arr-y" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+                  <path d="M0,0 L0,6 L7,3 z" fill="var(--yellow)"/>
+                </marker>
+                <marker id="arr-p" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+                  <path d="M0,0 L0,6 L7,3 z" fill="var(--purple)"/>
+                </marker>
+                <marker id="arr-g" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+                  <path d="M0,0 L0,6 L7,3 z" fill="var(--green)"/>
+                </marker>
+              </defs>
+
+              <!-- Key insight -->
+              <g id="insight-5">
+                <rect x="180" y="240" width="440" height="80" rx="8" fill="rgba(63, 185, 80, 0.1)" stroke="var(--green)" stroke-width="2"/>
+                <text x="400" y="270" text-anchor="middle" fill="var(--green)" font-size="13" font-weight="600">The Key Insight</text>
+                <text x="400" y="295" text-anchor="middle" fill="var(--text-primary)" font-size="11">Producer and Consumer run in PARALLEL</text>
+                <text x="400" y="310" text-anchor="middle" fill="var(--text-muted)" font-size="10">Socket never blocks. Buffer can take its time.</text>
+              </g>
+
+              <!-- Stats -->
+              <g id="stats-5">
+                <text x="100" y="360" text-anchor="middle" fill="var(--text-muted)" font-size="10">Time: <tspan id="time-5" fill="var(--text-primary)">0s</tspan></text>
+                <text x="280" y="360" text-anchor="middle" fill="var(--text-muted)" font-size="10">Audio: <tspan id="audio-5" fill="var(--text-primary)">0s</tspan></text>
+                <text x="460" y="360" text-anchor="middle" fill="var(--text-muted)" font-size="10">Chunks: <tspan id="total-chunks-5" fill="var(--text-primary)">0</tspan></text>
+                <text x="640" y="360" text-anchor="middle" fill="var(--text-muted)" font-size="10">Status: <tspan id="status-text-5" fill="var(--green)">Ready</tspan></text>
+              </g>
+            </svg>
+            
+            <div class="controls">
+              <button class="control-btn primary" id="run-5" onclick="runScene5()">▶ Run</button>
+              <button class="control-btn" onclick="resetScene5()">↺ Reset</button>
+              <div class="progress-container">
+                <div class="progress-bar"><div class="progress-fill" id="progress-5"></div></div>
+                <span class="progress-label" id="progress-label-5">Ready</span>
+              </div>
+              <div class="speed-control">
+                <span>Speed:</span>
+                <input type="range" id="speed-5" min="0.5" max="5" step="0.5" value="2" oninput="updateSpeedLabel(5)">
+                <span id="speed-label-5">2x</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="narration-box" id="narration-5">
+            <span class="step-num">✓</span>
+            <span class="step-text">Watch 149 seconds of audio stream through seamlessly. No deadlocks. No corruption. Just flow.</span>
+          </div>
+        </div>
+
+        <div class="split-sequence">
+          <div class="sequence-container">
+            <div class="sequence-title">Results</div>
+            <div style="padding: 1rem;">
+              <table class="comparison-table">
+                <tr>
+                  <th>Metric</th>
+                  <th>v1.0</th>
+                  <th>v1.1</th>
+                </tr>
+                <tr>
+                  <td>Short text</td>
+                  <td style="color: var(--red);">Cut off</td>
+                  <td style="color: var(--green);">✓</td>
+                </tr>
+                <tr>
+                  <td>Long text</td>
+                  <td style="color: var(--red);">Hangs</td>
+                  <td style="color: var(--green);">✓</td>
+                </tr>
+                <tr>
+                  <td>149s audio</td>
+                  <td style="color: var(--red);">∞</td>
+                  <td style="color: var(--green);">~160s</td>
+                </tr>
+                <tr>
+                  <td>Voice clone</td>
+                  <td style="color: var(--red);">Broken</td>
+                  <td style="color: var(--green);">✓</td>
+                </tr>
+              </table>
+              
+              <div style="margin-top: 1.5rem; padding: 1rem; background: rgba(63, 185, 80, 0.1); border-radius: 8px; border: 1px solid var(--green);">
+                <div style="font-size: 0.9rem; color: var(--green); font-weight: 600; margin-bottom: 0.5rem;">The Lesson</div>
+                <div style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5;">
+                  Two bugs. Two principles.<br>
+                  Memory views share fate.<br>
+                  Async blocks share time.<br>
+                  <br>
+                  Copy what matters.<br>
+                  Decouple what blocks.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    // Global state
+    let currentScene = 1;
+    const sceneSteps = { 1: 0, 2: 0, 3: 0, 5: 0 };
+    const maxSteps = { 1: 5, 2: 6, 3: 8 };
+    
+    // Narrations
+    const narrations = {
+      1: {
+        1: "Python server generates audio chunk and sends it through the socket...",
+        2: "The orchestrator receives the chunk and writes it to the ring buffer...",
+        3: "Once the buffer has enough data (3s), playback begins...",
+        4: "While audio plays, more chunks arrive and fill the buffer...",
+        5: "The cycle continues: generate → buffer → play. Continuous flow."
+      },
+      2: {
+        1: "Audio data arrives. We read it into a Float32Array called 'chunk'...",
+        2: "We call Buffer.from(chunk.buffer) - but this creates a VIEW, not a copy!",
+        3: "The buffer is pushed to the speaker's queue. It's waiting to play...",
+        4: "Next read() fills the SAME Float32Array with new data...",
+        5: "The speaker's queued buffer now points to the NEW data! Corruption!",
+        6: "User hears only 'my friend' - the rest was overwritten."
+      },
+      3: {
+        1: "Long text generates multiple chunks. Python sends chunk 1...",
+        2: "for await yields chunk 1 to the orchestrator...",
+        3: "handleChunk() writes to buffer. Buffer fills to 10s...",
+        4: "Buffer is FULL. handleChunk() awaits buffer drain...",
+        5: "But wait - for await is BLOCKED on handleChunk()!",
+        6: "Python sends chunk 2, but socket read is blocked...",
+        7: "Everyone waits. Deadlock. Socket times out.",
+        8: "Stream fails: 'Socket closed before receiving complete message'"
+      }
+    };
+
+    function showScene(num) {
+      document.querySelectorAll('.scene').forEach(s => s.classList.remove('active'));
+      document.querySelectorAll('.scene-nav button').forEach(b => b.classList.remove('active'));
+      document.getElementById(`scene-${num}`).classList.add('active');
+      document.querySelectorAll('.scene-nav button')[num - 1].classList.add('active');
+      currentScene = num;
+    }
+
+    function updateSpeedLabel(sceneNum) {
+      const slider = document.getElementById(`speed-${sceneNum}`);
+      const label = document.getElementById(`speed-label-${sceneNum}`);
+      label.textContent = slider.value + 'x';
+    }
+
+    function getSpeed(sceneNum) {
+      const slider = document.getElementById(`speed-${sceneNum}`);
+      return slider ? parseFloat(slider.value) : 1;
+    }
+
+    function delay(ms, sceneNum) {
+      return new Promise(r => setTimeout(r, ms / getSpeed(sceneNum)));
+    }
+
+    function updateNarration(sceneNum, step, text) {
+      const box = document.getElementById(`narration-${sceneNum}`);
+      box.innerHTML = `<span class="step-num">${step}</span><span class="step-text">${text}</span>`;
+      box.classList.add('active');
+    }
+
+    function updateProgress(sceneNum, step, max) {
+      document.getElementById(`progress-${sceneNum}`).style.width = (step / max * 100) + '%';
+      document.getElementById(`progress-label-${sceneNum}`).textContent = `Step ${step} of ${max}`;
+    }
+
+    function updateSeqDiagram(sceneNum, step) {
+      for (let i = 1; i <= maxSteps[sceneNum]; i++) {
+        const el = document.getElementById(`seq${sceneNum}-${i}`);
+        if (el) {
+          el.classList.remove('active', 'completed');
+          if (i < step) el.classList.add('completed');
+          else if (i === step) el.classList.add('active');
+        }
+      }
+    }
+
+    // Scene 1: The Dream
+    async function stepScene1() {
+      const step = ++sceneSteps[1];
+      if (step > maxSteps[1]) return;
+      
+      updateProgress(1, step, maxSteps[1]);
+      updateNarration(1, step, narrations[1][step]);
+      updateSeqDiagram(1, step);
+      document.getElementById('status-1').innerHTML = '<span class="status-dot"></span>Running';
+
+      const speed = getSpeed(1);
+
+      if (step === 1) {
+        // Python generates chunk
+        anime({ targets: '#python-server-1 rect', stroke: ['var(--yellow)', '#fbbf24', 'var(--yellow)'], duration: 400/speed });
+        anime({ targets: '#dot1-1', opacity: [0, 1], duration: 200/speed });
+        await delay(300, 1);
+        anime({ targets: '#dot1-1', cx: [120, 235], duration: 400/speed, easing: 'easeInOutQuad' });
+        anime({ targets: '#flow1-1', opacity: [0.3, 1, 0.3], duration: 600/speed });
+      } else if (step === 2) {
+        anime({ targets: '#dot1-1', cx: [235, 330], duration: 300/speed });
+        anime({ targets: '#socket-1 rect', stroke: ['var(--blue)', '#60a5fa', 'var(--blue)'], duration: 400/speed });
+        await delay(300, 1);
+        anime({ targets: '#dot1-2', opacity: [0, 1], cx: [330, 505], duration: 400/speed });
+        anime({ targets: '#buffer-fill-1', width: [0, 50], duration: 400/speed });
+        document.getElementById('buffer-label-1').textContent = '5s / 10s';
+      } else if (step === 3) {
+        anime({ targets: '#buffer-fill-1', width: [50, 96], duration: 400/speed });
+        document.getElementById('buffer-label-1').textContent = '10s / 10s';
+        await delay(200, 1);
+        anime({ targets: '#orchestrator-1 rect', stroke: ['var(--purple)', '#c084fc', 'var(--purple)'], duration: 400/speed });
+        anime({ targets: '#dot1-3', opacity: [0, 1], cx: [540, 655], duration: 400/speed });
+        anime({ targets: '#speaker-1 rect', stroke: ['var(--green)', '#4ade80', 'var(--green)'], duration: 400/speed });
+      } else if (step === 4) {
+        anime({ targets: '#flow1-3', opacity: [0.3, 1, 0.3], duration: 600/speed });
+        anime({ targets: '#soundwaves-1', opacity: [0, 1], duration: 300/speed });
+        anime({ targets: '#buffer-fill-1', width: [96, 70], duration: 500/speed });
+        document.getElementById('buffer-label-1').textContent = '7s / 10s';
+      } else if (step === 5) {
+        anime({ targets: '#flow1-1, #flow1-2, #flow1-3', opacity: [0.3, 0.8, 0.3], duration: 800/speed, loop: true });
+        anime({ targets: '#soundwaves-1 path', strokeDashoffset: [0, 20], duration: 500/speed, loop: true });
+        document.getElementById('status-1').innerHTML = '<span class="status-dot"></span>Complete';
+      }
+    }
+
+    async function runScene1() {
+      document.getElementById('run-1').disabled = true;
+      while (sceneSteps[1] < maxSteps[1]) {
+        await stepScene1();
+        await delay(800, 1);
+      }
+      document.getElementById('run-1').disabled = false;
+    }
+
+    function resetScene1() {
+      sceneSteps[1] = 0;
+      document.getElementById('progress-1').style.width = '0%';
+      document.getElementById('progress-label-1').textContent = 'Step 0 of 5';
+      document.getElementById('status-1').innerHTML = '<span class="status-dot paused"></span>Ready';
+      document.getElementById('narration-1').innerHTML = '<span class="step-num">0</span><span class="step-text">Press Run to see the dream in motion.</span>';
+      document.getElementById('narration-1').classList.remove('active');
+      document.getElementById('buffer-fill-1').setAttribute('width', '0');
+      document.getElementById('buffer-label-1').textContent = '0s / 10s';
+      
+      ['dot1-1', 'dot1-2', 'dot1-3', 'soundwaves-1'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.opacity = 0;
+      });
+      
+      for (let i = 1; i <= 5; i++) {
+        const el = document.getElementById(`seq1-${i}`);
+        if (el) el.classList.remove('active', 'completed');
+      }
+      
+      anime.remove('#flow1-1, #flow1-2, #flow1-3, #soundwaves-1 path');
+    }
+
+    // Scene 2: Bug #1
+    async function stepScene2() {
+      const step = ++sceneSteps[2];
+      if (step > maxSteps[2]) return;
+      
+      updateProgress(2, step, maxSteps[2]);
+      updateNarration(2, step, narrations[2][step]);
+      document.getElementById('status-2').innerHTML = '<span class="status-dot"></span>Running';
+
+      const speed = getSpeed(2);
+
+      if (step === 1) {
+        anime({ targets: '#t1-marker', opacity: [0, 1], duration: 300/speed });
+        anime({ targets: '#cell-0, #cell-1, #cell-2, #cell-3, #cell-n, #cell-n1', fill: ['var(--text-muted)', 'var(--green)'], duration: 400/speed });
+        document.getElementById('mem-step-1').classList.add('active');
+      } else if (step === 2) {
+        anime({ targets: '#buffer-from', opacity: [0, 1], duration: 300/speed });
+        anime({ targets: '#t2-marker', opacity: [0, 1], duration: 300/speed });
+        document.getElementById('mem-step-2').classList.add('active');
+        document.getElementById('mem-step-1').classList.remove('active');
+        document.getElementById('mem-step-1').classList.add('completed');
+      } else if (step === 3) {
+        anime({ targets: '#queued-buf-1', opacity: [0, 1], duration: 300/speed });
+        document.getElementById('buf1-text').textContent = '"Hello there"';
+      } else if (step === 4) {
+        anime({ targets: '#t3-marker', opacity: [0, 1], duration: 300/speed });
+        anime({ targets: '#cell-0', textContent: '0.11', duration: 1/speed });
+        anime({ targets: '#cell-1', textContent: '0.22', duration: 1/speed });
+        anime({ targets: '#cell-0, #cell-1, #cell-2, #cell-3', fill: ['var(--green)', 'var(--orange)'], duration: 400/speed });
+        document.getElementById('cell-0').textContent = '0.11';
+        document.getElementById('cell-1').textContent = '0.22';
+        document.getElementById('mem-step-3').classList.add('active');
+        document.getElementById('mem-step-2').classList.remove('active');
+        document.getElementById('mem-step-2').classList.add('completed');
+      } else if (step === 5) {
+        anime({ targets: '#corruption-viz', opacity: [0, 1], duration: 400/speed });
+        anime({ targets: '#queued-buf-1 rect', fill: 'rgba(248, 81, 73, 0.3)', stroke: 'var(--red)', duration: 300/speed });
+        document.getElementById('buf1-text').textContent = '"my friend" !!';
+        document.getElementById('buf1-text').setAttribute('fill', 'var(--red)');
+        document.getElementById('mem-step-4').classList.add('active');
+        document.getElementById('mem-step-3').classList.remove('active');
+        document.getElementById('mem-step-3').classList.add('completed');
+      } else if (step === 6) {
+        anime({ targets: '#t4-marker', opacity: [0, 1], duration: 300/speed });
+        anime({ targets: '#result-2', opacity: [0, 1], duration: 400/speed });
+        document.getElementById('mem-step-5').classList.add('active');
+        document.getElementById('status-2').innerHTML = '<span class="status-dot paused"></span>Bug Revealed';
+      }
+    }
+
+    async function runScene2() {
+      document.getElementById('run-2').disabled = true;
+      while (sceneSteps[2] < maxSteps[2]) {
+        await stepScene2();
+        await delay(1000, 2);
+      }
+      document.getElementById('run-2').disabled = false;
+    }
+
+    function resetScene2() {
+      sceneSteps[2] = 0;
+      document.getElementById('progress-2').style.width = '0%';
+      document.getElementById('progress-label-2').textContent = 'Step 0 of 6';
+      document.getElementById('status-2').innerHTML = '<span class="status-dot paused"></span>Ready';
+      document.getElementById('narration-2').innerHTML = '<span class="step-num">0</span><span class="step-text">Watch how a single reused array causes audio to vanish.</span>';
+      
+      ['buffer-from', 'queued-buf-1', 'queued-buf-2', 'corruption-viz', 'result-2', 't1-marker', 't2-marker', 't3-marker', 't4-marker'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.opacity = 0;
+      });
+      
+      document.getElementById('cell-0').textContent = '0.12';
+      document.getElementById('cell-1').textContent = '0.34';
+      document.getElementById('buf1-text').textContent = '"Hello there"';
+      document.getElementById('buf1-text').setAttribute('fill', 'var(--green)');
+      
+      for (let i = 1; i <= 5; i++) {
+        const el = document.getElementById(`mem-step-${i}`);
+        if (el) el.classList.remove('active', 'completed');
+      }
+    }
+
+    // Scene 3: Bug #2
+    async function stepScene3() {
+      const step = ++sceneSteps[3];
+      if (step > maxSteps[3]) return;
+      
+      updateProgress(3, step, maxSteps[3]);
+      updateNarration(3, step, narrations[3][step]);
+      updateSeqDiagram(3, step);
+      document.getElementById('status-3').innerHTML = '<span class="status-dot"></span>Running';
+      document.getElementById('time-3').textContent = `t = ${step}s`;
+
+      const speed = getSpeed(3);
+
+      if (step === 1) {
+        anime({ targets: '#py-c1', fill: ['var(--text-muted)', 'var(--green)'], duration: 300/speed });
+        document.getElementById('py-status').textContent = 'Sending chunk 1...';
+        anime({ targets: '#sock-c1', opacity: [0, 1], duration: 300/speed });
+      } else if (step === 2) {
+        document.getElementById('for-await-status').textContent = 'Received chunk 1';
+        document.getElementById('for-await-spinner').style.opacity = 1;
+      } else if (step === 3) {
+        document.getElementById('for-await-status').textContent = 'Processing...';
+        anime({ targets: '#ring-fill-3', width: [0, 116], duration: 500/speed });
+        document.getElementById('ring-status-3').textContent = 'Buffer: 10s / 10s';
+      } else if (step === 4) {
+        anime({ targets: '#blocked-indicator', opacity: [0, 1], duration: 300/speed });
+        document.getElementById('ring-status-3').textContent = 'FULL! Waiting...';
+        anime({ targets: '#handle-chunk-box rect', stroke: ['var(--cyan)', 'var(--red)', 'var(--cyan)'], duration: 600/speed, loop: true });
+      } else if (step === 5) {
+        anime({ targets: '#for-await-box rect', stroke: ['var(--orange)', 'var(--red)'], duration: 300/speed });
+        document.getElementById('for-await-status').textContent = 'BLOCKED on handleChunk!';
+        document.getElementById('for-await-spinner').style.opacity = 0;
+      } else if (step === 6) {
+        anime({ targets: '#py-c2', fill: ['var(--text-muted)', 'var(--green)'], duration: 300/speed });
+        document.getElementById('py-status').textContent = 'Sending chunk 2...';
+        anime({ targets: '#sock-c2', opacity: [0, 1], duration: 300/speed });
+        await delay(300, 3);
+        anime({ targets: '#sock-c2', fill: ['var(--green)', 'var(--orange)'], duration: 300/speed });
+      } else if (step === 7) {
+        anime({ targets: '#deadlock-arrows', opacity: [0, 1], duration: 500/speed });
+        anime({ targets: '#problem-box-3', opacity: [0, 1], duration: 400/speed });
+        anime({ targets: '#speaker-drain-3', width: [116, 60], duration: 500/speed });
+        document.getElementById('speaker-status-3').textContent = 'Still playing...';
+      } else if (step === 8) {
+        anime({ targets: '#sock-c1, #sock-c2', fill: 'var(--red)', duration: 300/speed });
+        document.getElementById('py-status').textContent = 'Connection timeout!';
+        document.getElementById('status-3').innerHTML = '<span class="status-dot paused"></span>DEADLOCK';
+        anime.remove('#handle-chunk-box rect');
+      }
+    }
+
+    async function runScene3() {
+      document.getElementById('run-3').disabled = true;
+      while (sceneSteps[3] < maxSteps[3]) {
+        await stepScene3();
+        await delay(1200, 3);
+      }
+      document.getElementById('run-3').disabled = false;
+    }
+
+    function resetScene3() {
+      sceneSteps[3] = 0;
+      document.getElementById('progress-3').style.width = '0%';
+      document.getElementById('progress-label-3').textContent = 'Step 0 of 8';
+      document.getElementById('status-3').innerHTML = '<span class="status-dot paused"></span>Ready';
+      document.getElementById('time-3').textContent = 't = 0s';
+      document.getElementById('narration-3').innerHTML = '<span class="step-num">0</span><span class="step-text">Watch the system freeze as each component waits for another.</span>';
+      
+      document.getElementById('py-status').textContent = 'Ready to send';
+      document.getElementById('for-await-status').textContent = 'Waiting for message...';
+      document.getElementById('ring-status-3').textContent = 'Buffer: 0s / 10s';
+      document.getElementById('speaker-status-3').textContent = 'Playing buffer...';
+      
+      ['blocked-indicator', 'deadlock-arrows', 'problem-box-3', 'sock-c1', 'sock-c2', 'sock-c3'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.opacity = 0;
+      });
+      
+      document.getElementById('ring-fill-3').setAttribute('width', '0');
+      document.getElementById('speaker-drain-3').setAttribute('width', '116');
+      document.getElementById('for-await-spinner').style.opacity = 0;
+      
+      anime.remove('#handle-chunk-box rect');
+      document.querySelector('#handle-chunk-box rect').setAttribute('stroke', 'var(--cyan)');
+      document.querySelector('#for-await-box rect').setAttribute('stroke', 'var(--orange)');
+      
+      for (let i = 1; i <= 8; i++) {
+        const el = document.getElementById(`seq3-${i}`);
+        if (el) el.classList.remove('active', 'completed');
+      }
+    }
+
+    // Scene 5: Redemption
+    let scene5Running = false;
+    
+    async function runScene5() {
+      if (scene5Running) return;
+      scene5Running = true;
+      document.getElementById('run-5').disabled = true;
+      document.getElementById('status-5').innerHTML = '<span class="status-dot"></span>Streaming';
+      
+      const speed = getSpeed(5);
+      const totalChunks = 14;
+      const totalAudio = 149;
+      let chunksProcessed = 0;
+      let audioPlayed = 0;
+      let queueSize = 0;
+      
+      anime({ targets: '#waves-5', opacity: 1, duration: 300 });
+      
+      // Simulate the streaming process
+      for (let t = 0; t < 160; t += 2) {
+        if (!scene5Running) break;
+        
+        // Update time
+        document.getElementById('time-5').textContent = t + 's';
+        document.getElementById('progress-5').style.width = (t / 160 * 100) + '%';
+        document.getElementById('progress-label-5').textContent = `${t}s / ~160s`;
+        
+        // Python generates chunks (faster than realtime)
+        if (chunksProcessed < totalChunks && t < 60) {
+          if (t % 4 === 0) {
+            queueSize++;
+            document.getElementById('py-5-chunks').textContent = `${Math.min(chunksProcessed + queueSize, totalChunks)} chunks sent`;
+            document.getElementById('queue-count-5').textContent = `${queueSize} queued`;
+          }
+        }
+        
+        // Consumer processes chunks
+        if (queueSize > 0 && t % 3 === 0) {
+          queueSize--;
+          chunksProcessed++;
+          document.getElementById('chunks-processed-5').textContent = `${chunksProcessed} processed`;
+          document.getElementById('queue-count-5').textContent = `${queueSize} queued`;
+        }
+        
+        // Audio plays (realtime)
+        audioPlayed = Math.min(t, totalAudio);
+        document.getElementById('audio-5').textContent = audioPlayed + 's';
+        document.getElementById('total-chunks-5').textContent = chunksProcessed.toString();
+        
+        // Buffer level
+        const bufferLevel = Math.min(10, Math.max(0, (chunksProcessed * 10.6) - audioPlayed));
+        anime({ targets: '#buf-fill-5', width: bufferLevel * 12.6, duration: 100 });
+        document.getElementById('buf-5-label').textContent = `Buffer: ${bufferLevel.toFixed(1)}s`;
+        
+        // Speaker status
+        document.getElementById('speaker-5-status').textContent = audioPlayed < totalAudio ? '🔊 Playing' : 'Complete';
+        document.getElementById('status-text-5').textContent = audioPlayed < totalAudio ? 'Streaming' : 'Complete!';
+        
+        if (chunksProcessed >= totalChunks) {
+          document.getElementById('py-5-status').textContent = 'Done!';
+        }
+        
+        await delay(100, 5);
+      }
+      
+      document.getElementById('status-5').innerHTML = '<span class="status-dot paused"></span>Complete';
+      document.getElementById('progress-label-5').textContent = '✓ 149s audio streamed';
+      scene5Running = false;
+      document.getElementById('run-5').disabled = false;
+    }
+
+    function resetScene5() {
+      scene5Running = false;
+      document.getElementById('run-5').disabled = false;
+      document.getElementById('status-5').innerHTML = '<span class="status-dot paused"></span>Ready';
+      document.getElementById('progress-5').style.width = '0%';
+      document.getElementById('progress-label-5').textContent = 'Ready';
+      document.getElementById('time-5').textContent = '0s';
+      document.getElementById('audio-5').textContent = '0s';
+      document.getElementById('total-chunks-5').textContent = '0';
+      document.getElementById('status-text-5').textContent = 'Ready';
+      document.getElementById('py-5-status').textContent = 'Generating...';
+      document.getElementById('py-5-chunks').textContent = '0 chunks sent';
+      document.getElementById('queue-count-5').textContent = '0 queued';
+      document.getElementById('chunks-processed-5').textContent = '0 processed';
+      document.getElementById('speaker-5-status').textContent = 'Ready';
+      document.getElementById('buf-5-label').textContent = 'Buffer: 0s';
+      document.getElementById('buf-fill-5').setAttribute('width', '0');
+      document.getElementById('waves-5').style.opacity = 0;
+    }
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (currentScene === 1) stepScene1();
+        else if (currentScene === 2) stepScene2();
+        else if (currentScene === 3) stepScene3();
+        else if (currentScene === 5) runScene5();
+      }
+      if (e.code === 'KeyR') {
+        if (currentScene === 1) resetScene1();
+        else if (currentScene === 2) resetScene2();
+        else if (currentScene === 3) resetScene3();
+        else if (currentScene === 5) resetScene5();
+      }
+      if (e.code === 'ArrowRight' && currentScene < 5) {
+        showScene(currentScene + 1);
+      }
+      if (e.code === 'ArrowLeft' && currentScene > 1) {
+        showScene(currentScene - 1);
+      }
+    });
+  </script>
+</body>
+</html>
