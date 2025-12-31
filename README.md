@@ -1,4 +1,6 @@
-# speak
+<p align="center">
+  <img src="assets/banner.jpeg" alt="speak - High performance CLI tool your agent can use to generate life like speech, real time on Apple Silicon" width="100%">
+</p>
 
 A fast CLI tool for AI agents to convert their text output to speech using Chatterbox TTS on Apple Silicon.
 
