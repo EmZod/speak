@@ -112,12 +112,30 @@ def log(level: str, message: str, **data):
         pass
 
 
-def load_model(model_name: str):
-    """Load TTS model (lazy loading)"""
+def load_model(model_name: str, request_id: str = None, conn = None):
+    """
+    Load TTS model (lazy loading).
+    
+    If request_id and conn are provided, sends status events to client.
+    """
     global _model, _model_name
 
     if _model is not None and _model_name == model_name:
-        return _model
+        return _model, 0.0  # Already loaded, no load time
+
+    # Send status: loading_model
+    if request_id and conn:
+        try:
+            status_msg = {
+                "id": request_id,
+                "status": {
+                    "phase": "loading_model",
+                    "model": model_name,
+                }
+            }
+            conn.send((json.dumps(status_msg) + "\n").encode("utf-8"))
+        except:
+            pass
 
     log("info", f"Loading model: {model_name}")
     start = time.time()
@@ -129,7 +147,21 @@ def load_model(model_name: str):
     elapsed = time.time() - start
     log("info", f"Model loaded in {elapsed:.2f}s")
 
-    return _model
+    # Send status: model_loaded
+    if request_id and conn:
+        try:
+            status_msg = {
+                "id": request_id,
+                "status": {
+                    "phase": "model_loaded",
+                    "load_time_ms": int(elapsed * 1000),
+                }
+            }
+            conn.send((json.dumps(status_msg) + "\n").encode("utf-8"))
+        except:
+            pass
+
+    return _model, elapsed
 
 
 def handle_health(request_id: str, params: Dict) -> Dict:
@@ -161,7 +193,12 @@ def handle_list_models(request_id: str, params: Dict) -> Dict:
 
 
 def handle_generate(request_id: str, params: Dict, conn=None) -> Dict:
-    """Generate TTS audio (non-streaming)"""
+    """
+    Generate TTS audio (non-streaming) with progressive chunk saving.
+    
+    Chunks are saved to disk immediately after generation so partial
+    output is preserved if generation is interrupted.
+    """
     text = params.get("text", "")
     if not text:
         return {"id": request_id, "error": {"code": 1, "message": "No text provided"}}
@@ -181,9 +218,25 @@ def handle_generate(request_id: str, params: Dict, conn=None) -> Dict:
         import numpy as np
         import scipy.io.wavfile as wavfile
 
+        # Send status: check if model needs loading
+        needs_model_load = _model_name != model_name
+        if conn and needs_model_load:
+            try:
+                status_msg = {
+                    "id": request_id,
+                    "status": {
+                        "phase": "loading_model",
+                        "model": model_name,
+                    }
+                }
+                conn.send((json.dumps(status_msg) + "\n").encode("utf-8"))
+            except:
+                pass
+
         # Split text into chunks to prevent model destabilization
         chunks = split_text_into_chunks(text)
-        log("info", f"Generating TTS for {len(text)} chars in {len(chunks)} chunks",
+        total_chunks = len(chunks)
+        log("info", f"Generating TTS for {len(text)} chars in {total_chunks} chunks",
             model=model_name, temperature=temperature, speed=speed)
 
         start = time.time()
@@ -193,13 +246,33 @@ def handle_generate(request_id: str, params: Dict, conn=None) -> Dict:
         import io
         from contextlib import redirect_stdout, redirect_stderr
 
-        all_audio = []
+        # Progressive saving: track saved chunk files instead of in-memory audio
+        saved_chunk_files: list[str] = []
         sample_rate = None
+        chunks_generated = 0
 
+        chars_done = 0
+        
         for i, chunk in enumerate(chunks):
             chunk_prefix = os.path.join(TEMP_DIR, f"speak_{timestamp}_chunk{i}")
 
-            log("debug", f"Generating chunk {i+1}/{len(chunks)}: {len(chunk)} chars")
+            log("debug", f"Generating chunk {i+1}/{total_chunks}: {len(chunk)} chars")
+            
+            # Send progress event if connection available
+            if conn:
+                progress_msg = {
+                    "id": request_id,
+                    "progress": {
+                        "chunk": i + 1,
+                        "total_chunks": total_chunks,
+                        "chars_done": chars_done,
+                        "chars_total": len(text),
+                    }
+                }
+                try:
+                    conn.send((json.dumps(progress_msg) + "\n").encode("utf-8"))
+                except:
+                    pass  # Ignore progress send errors
 
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 generate_audio(
@@ -216,7 +289,7 @@ def handle_generate(request_id: str, params: Dict, conn=None) -> Dict:
                     max_tokens=2400,
                 )
 
-            # Find and read the generated chunk file(s)
+            # Find and save the generated chunk file(s)
             chunk_files = sorted([
                 f for f in os.listdir(TEMP_DIR)
                 if f.startswith(f"speak_{timestamp}_chunk{i}") and f.endswith(".wav")
@@ -224,17 +297,25 @@ def handle_generate(request_id: str, params: Dict, conn=None) -> Dict:
 
             for cf in chunk_files:
                 chunk_path = os.path.join(TEMP_DIR, cf)
-                sr, audio_data = wavfile.read(chunk_path)
+                # Read to get sample rate (needed for concatenation)
+                sr, _ = wavfile.read(chunk_path)
                 if sample_rate is None:
                     sample_rate = sr
-                all_audio.append(audio_data)
-                # Clean up chunk file
-                os.remove(chunk_path)
+                # Keep chunk file on disk for progressive saving
+                saved_chunk_files.append(chunk_path)
+                chunks_generated += 1
+                chars_done += len(chunk)
+                log("debug", f"Saved chunk {chunks_generated} to {chunk_path}")
 
-        if not all_audio:
+        if not saved_chunk_files:
             return {"id": request_id, "error": {"code": 3, "message": "No audio generated"}}
 
-        # Concatenate all audio chunks
+        # Concatenate all saved chunks
+        all_audio = []
+        for chunk_path in saved_chunk_files:
+            sr, audio_data = wavfile.read(chunk_path)
+            all_audio.append(audio_data)
+
         combined_audio = np.concatenate(all_audio)
         duration = len(combined_audio) / sample_rate
 
@@ -242,10 +323,17 @@ def handle_generate(request_id: str, params: Dict, conn=None) -> Dict:
         output_path = os.path.join(TEMP_DIR, f"speak_{timestamp}.wav")
         wavfile.write(output_path, sample_rate, combined_audio)
 
+        # Clean up individual chunk files
+        for chunk_path in saved_chunk_files:
+            try:
+                os.remove(chunk_path)
+            except:
+                pass
+
         elapsed = time.time() - start
         rtf = elapsed / duration if duration > 0 else 0
 
-        log("info", f"Generated {duration:.2f}s audio in {elapsed:.2f}s (RTF: {rtf:.2f}, {len(chunks)} chunks)")
+        log("info", f"Generated {duration:.2f}s audio in {elapsed:.2f}s (RTF: {rtf:.2f}, {chunks_generated}/{total_chunks} chunks)")
 
         return {
             "id": request_id,
@@ -254,11 +342,62 @@ def handle_generate(request_id: str, params: Dict, conn=None) -> Dict:
                 "duration": duration,
                 "rtf": rtf,
                 "sample_rate": sample_rate,
+                "complete": True,
+                "chunks_generated": chunks_generated,
+                "chunks_total": total_chunks,
             }
         }
 
     except Exception as e:
         log("error", f"Generation failed: {e}", traceback=traceback.format_exc())
+        
+        # Attempt to save partial output if any chunks were generated
+        try:
+            if saved_chunk_files:
+                import numpy as np
+                import scipy.io.wavfile as wavfile
+                
+                all_audio = []
+                for chunk_path in saved_chunk_files:
+                    if os.path.exists(chunk_path):
+                        sr, audio_data = wavfile.read(chunk_path)
+                        all_audio.append(audio_data)
+                
+                if all_audio:
+                    combined_audio = np.concatenate(all_audio)
+                    duration = len(combined_audio) / sample_rate if sample_rate else 0
+                    
+                    output_path = os.path.join(TEMP_DIR, f"speak_{timestamp}_partial.wav")
+                    wavfile.write(output_path, sample_rate, combined_audio)
+                    
+                    # Clean up chunks
+                    for chunk_path in saved_chunk_files:
+                        try:
+                            os.remove(chunk_path)
+                        except:
+                            pass
+                    
+                    elapsed = time.time() - start
+                    rtf = elapsed / duration if duration > 0 else 0
+                    
+                    log("info", f"Saved partial output: {duration:.2f}s audio, {chunks_generated}/{total_chunks} chunks")
+                    
+                    return {
+                        "id": request_id,
+                        "result": {
+                            "audio_path": output_path,
+                            "duration": duration,
+                            "rtf": rtf,
+                            "sample_rate": sample_rate,
+                            "complete": False,
+                            "chunks_generated": chunks_generated,
+                            "chunks_total": total_chunks,
+                            "reason": str(e),
+                        }
+                    }
+        except Exception as partial_error:
+            log("error", f"Failed to save partial output: {partial_error}")
+        
         return {
             "id": request_id,
             "error": {"code": 2, "message": str(e)}

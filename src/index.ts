@@ -31,7 +31,7 @@ program
   .version(VERSION)
   .argument("[input...]", "Text to convert or file paths")
   .option("-c, --clipboard", "Read from system clipboard")
-  .option("-o, --output <dir>", "Output directory", config.output_dir)
+  .option("-o, --output <path>", "Output file (.wav) or directory", config.output_dir)
   .option("-m, --model <name>", "TTS model", config.model)
   .option("-t, --temp <value>", "Temperature (0-1)", String(config.temperature))
   .option("-s, --speed <value>", "Playback speed (0-2)", String(config.speed))
@@ -42,13 +42,23 @@ program
   .option("--stream", "Stream audio as it generates")
   .option("--preview", "Generate first sentence only")
   .option("--daemon", "Use persistent server for faster calls", config.daemon)
+  .option("--timeout <seconds>", "Generation timeout in seconds (0 = no timeout)", "300")
+  .option("--auto-chunk", "Automatically chunk long documents for reliable generation")
+  .option("--chunk-size <chars>", "Max characters per chunk", "6000")
+  .option("--resume <manifest>", "Resume from a previous incomplete generation")
+  .option("--keep-chunks", "Keep intermediate chunk files after completion")
+  .option("--output-dir <dir>", "Output directory for batch mode")
+  .option("--skip-existing", "Skip files that already have output")
+  .option("--stop-on-error", "Stop batch processing on first error")
+  .option("--estimate", "Show duration estimate without generating")
+  .option("--dry-run", "Preview what would happen without generating")
   .option("--verbose", "Show detailed progress")
   .option("--quiet", "Suppress all output except errors")
   .action(async (input: string[], options) => {
     const { initLogger, logger } = await import("./ui/logger.ts");
     const { startDaemon, stopDaemon } = await import("./bridge/daemon.ts");
     const { generate } = await import("./bridge/client.ts");
-    const { copyToOutput, playAudio, registerCleanupHandlers, stopAudio } = await import("./core/output.ts");
+    const { copyToOutput, playAudio, registerCleanupHandlers, stopAudio, prepareOutputPath } = await import("./core/output.ts");
     const { isVenvValid, runSetup } = await import("./python/setup.ts");
     const { processMarkdown, isMarkdown, extractFirstSentence } = await import(
       "./core/markdown.ts"
@@ -83,6 +93,174 @@ program
       }
     }
 
+    // Handle resume mode early (doesn't need input)
+    if (options.resume) {
+      // Jump directly to resume handling (after daemon starts)
+      // We need to start the daemon first
+      const { startDaemon, stopDaemon } = await import("./bridge/daemon.ts");
+      const started = await startDaemon();
+      if (!started) {
+        console.log(pc.red("Failed to start TTS server"));
+        process.exit(1);
+      }
+
+      const {
+        loadManifest,
+        getPendingChunks,
+        updateChunkStatus,
+        saveManifest,
+        isComplete,
+      } = await import("./core/manifest.ts");
+      const { concatenateWav, cleanupChunkFiles, hasSox } = await import(
+        "./core/concatenate.ts"
+      );
+      const { copyFileSync, unlinkSync } = await import("fs");
+      const { generate } = await import("./bridge/client.ts");
+
+      // Verify sox is available
+      if (!hasSox()) {
+        console.log(pc.red("Error: sox is required for resume but not found."));
+        console.log(pc.dim("Install with: brew install sox"));
+        process.exit(1);
+      }
+
+      const manifest = loadManifest(options.resume);
+      if (!manifest) {
+        console.log(pc.red(`Cannot load manifest: ${options.resume}`));
+        process.exit(1);
+      }
+
+      const pending = getPendingChunks(manifest);
+
+      if (pending.length === 0 && isComplete(manifest)) {
+        if (!options.quiet) {
+          console.log(pc.green("All chunks already complete."));
+        }
+
+        // Just do final concatenation
+        const outputPath = manifest.output_file || prepareOutputPath(options.output);
+        const chunkFiles = manifest.chunks.map((c) => c.output);
+        concatenateWav(chunkFiles, outputPath);
+
+        if (!options.quiet) {
+          console.log(pc.green(`✓ Output: ${outputPath}`));
+        }
+
+        // Cleanup unless --keep-chunks
+        if (!options.keepChunks) {
+          cleanupChunkFiles(chunkFiles);
+          try {
+            unlinkSync(options.resume);
+          } catch {
+            // Ignore
+          }
+        }
+
+        // Stop daemon if not in daemon mode
+        if (!options.daemon) {
+          await stopDaemon();
+        }
+
+        process.exit(0);
+      }
+
+      if (!options.quiet) {
+        console.log(
+          pc.cyan(`Resuming: ${pending.length}/${manifest.chunks.length} chunks remaining`)
+        );
+      }
+
+      const timeoutMs = parseInt(options.timeout) * 1000;
+
+      for (const chunk of pending) {
+        if (!options.quiet) {
+          process.stdout.write(
+            pc.dim(`  Chunk ${chunk.index + 1}/${manifest.chunks.length}...`)
+          );
+        }
+
+        try {
+          const result = await generate(
+            {
+              text: chunk.text,
+              model: manifest.params.model,
+              temperature: manifest.params.temperature,
+              speed: manifest.params.speed,
+              voice: manifest.params.voice,
+            },
+            timeoutMs
+          );
+
+          copyFileSync(result.audio_path, chunk.output);
+          updateChunkStatus(manifest, chunk.index, "complete", result.duration);
+          saveManifest(manifest, options.resume);
+
+          if (!options.quiet) {
+            console.log(pc.green(` ✓ ${result.duration.toFixed(1)}s`));
+          }
+        } catch (error) {
+          updateChunkStatus(manifest, chunk.index, "failed");
+          saveManifest(manifest, options.resume);
+
+          const message = error instanceof Error ? error.message : String(error);
+          if (!options.quiet) {
+            console.log(pc.red(` ✗ ${message}`));
+            console.log(pc.yellow(`Resume with: speak --resume ${options.resume}`));
+          }
+
+          // Stop daemon if not in daemon mode
+          if (!options.daemon) {
+            await stopDaemon();
+          }
+
+          process.exit(1);
+        }
+      }
+
+      // All done - concatenate
+      const outputPath = manifest.output_file || prepareOutputPath(options.output);
+      const chunkFiles = manifest.chunks.map((c) => c.output);
+      concatenateWav(chunkFiles, outputPath);
+
+      // Calculate total duration
+      const totalDuration = manifest.chunks.reduce((sum, c) => sum + (c.duration || 0), 0);
+
+      if (!options.quiet) {
+        console.log(
+          pc.green(
+            `✓ Generated ${totalDuration.toFixed(1)}s of audio from ${manifest.chunks.length} chunks`
+          )
+        );
+        console.log(pc.dim(`  Output: ${outputPath}`));
+      }
+
+      // Cleanup unless --keep-chunks
+      if (!options.keepChunks) {
+        cleanupChunkFiles(chunkFiles);
+        try {
+          unlinkSync(options.resume);
+        } catch {
+          // Ignore
+        }
+      }
+
+      // Play audio if requested
+      if (options.play) {
+        const { playAudio } = await import("./core/output.ts");
+        if (!options.quiet) {
+          console.log(pc.dim("  Playing..."));
+        }
+        await playAudio(outputPath);
+      }
+
+      // Stop daemon if not in daemon mode
+      if (!options.daemon) {
+        await stopDaemon();
+      }
+
+      process.exit(0);
+    }
+
     // Get text input
     let text = "";
     let isMarkdownFile = false;
@@ -96,8 +274,164 @@ program
         process.exit(1);
       }
     } else if (input.length > 0) {
-      // Check if input is a file path or text
+      // Check if input is file paths (batch mode) or text
       const fs = await import("fs");
+      const inputFiles = input.filter((p) => fs.existsSync(p));
+
+      // Batch mode: multiple files detected
+      if (inputFiles.length > 1 || (inputFiles.length === 1 && options.outputDir)) {
+        const { prepareBatchInputs, validateBatchInputs, summarizeBatch } = await import(
+          "./core/batch.ts"
+        );
+        const { processMarkdown, isMarkdown } = await import("./core/markdown.ts");
+
+        const outputDir = options.outputDir || options.output;
+
+        const batchInputs = prepareBatchInputs(inputFiles, {
+          outputDir,
+          skipExisting: options.skipExisting || false,
+        });
+
+        const validation = validateBatchInputs(batchInputs);
+        if (!validation.valid) {
+          for (const error of validation.errors) {
+            console.log(pc.red(`Error: ${error}`));
+          }
+          process.exit(1);
+        }
+
+        // Ensure output directory exists
+        if (!fs.existsSync(outputDir)) {
+          fs.mkdirSync(outputDir, { recursive: true });
+        }
+
+        if (!options.quiet) {
+          console.log(pc.cyan(`Processing ${batchInputs.length} files...\n`));
+        }
+
+        // Start daemon
+        const { startDaemon, stopDaemon } = await import("./bridge/daemon.ts");
+        const started = await startDaemon();
+        if (!started) {
+          console.log(pc.red("Failed to start TTS server"));
+          process.exit(1);
+        }
+
+        const results: Array<{
+          inputPath: string;
+          outputPath: string;
+          success: boolean;
+          duration?: number;
+          error?: string;
+          skipped: boolean;
+        }> = [];
+
+        const timeoutMs = parseInt(options.timeout) * 1000;
+
+        for (const batchInput of batchInputs) {
+          if (batchInput.skip) {
+            if (!options.quiet) {
+              console.log(pc.dim(`  Skip: ${batchInput.inputPath} (output exists)`));
+            }
+            results.push({
+              inputPath: batchInput.inputPath,
+              outputPath: batchInput.outputPath,
+              success: true,
+              skipped: true,
+            });
+            continue;
+          }
+
+          if (!options.quiet) {
+            process.stdout.write(`  ${batchInput.inputPath}...`);
+          }
+
+          try {
+            let fileText = fs.readFileSync(batchInput.inputPath, "utf-8");
+
+            // Process markdown if needed
+            const isMarkdownFile = batchInput.inputPath.endsWith(".md");
+            if (isMarkdownFile || isMarkdown(fileText)) {
+              fileText = processMarkdown(fileText, {
+                mode: options.markdown as "plain" | "smart",
+                codeBlocks: options.codeBlocks as "read" | "skip" | "placeholder",
+              });
+            }
+
+            const result = await generate(
+              {
+                text: fileText,
+                model: options.model,
+                temperature: parseFloat(options.temp),
+                speed: parseFloat(options.speed),
+                voice: options.voice,
+              },
+              timeoutMs
+            );
+
+            fs.copyFileSync(result.audio_path, batchInput.outputPath);
+
+            if (!options.quiet) {
+              console.log(pc.green(` ✓ ${result.duration.toFixed(1)}s`));
+            }
+
+            results.push({
+              inputPath: batchInput.inputPath,
+              outputPath: batchInput.outputPath,
+              success: true,
+              duration: result.duration,
+              skipped: false,
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+
+            if (!options.quiet) {
+              console.log(pc.red(` ✗ ${message}`));
+            }
+
+            results.push({
+              inputPath: batchInput.inputPath,
+              outputPath: batchInput.outputPath,
+              success: false,
+              error: message,
+              skipped: false,
+            });
+
+            if (options.stopOnError) {
+              if (!options.quiet) {
+                console.log(pc.red("\nStopping due to --stop-on-error"));
+              }
+              break;
+            }
+          }
+        }
+
+        // Print summary
+        const summary = summarizeBatch(results);
+
+        if (!options.quiet) {
+          console.log(pc.cyan("\n--- Batch Summary ---"));
+          console.log(`  Total:    ${summary.total}`);
+          console.log(pc.green(`  Success:  ${summary.success}`));
+          if (summary.failed > 0) {
+            console.log(pc.red(`  Failed:   ${summary.failed}`));
+          }
+          if (summary.skipped > 0) {
+            console.log(pc.yellow(`  Skipped:  ${summary.skipped}`));
+          }
+          console.log(pc.dim(`  Duration: ${summary.totalDuration.toFixed(1)}s total`));
+        }
+
+        // Stop daemon if not in daemon mode
+        if (!options.daemon) {
+          await stopDaemon();
+        }
+
+        // Exit with error code if any failed
+        process.exit(summary.failed > 0 ? 1 : 0);
+      }
+
+      // Single file or text input
       if (input.length === 1 && fs.existsSync(input[0])) {
         text = fs.readFileSync(input[0], "utf-8");
         isMarkdownFile = input[0].endsWith(".md");
@@ -137,6 +471,47 @@ program
       }
     }
 
+    // Estimate mode: show estimate and exit
+    if (options.estimate) {
+      const { estimateDuration, formatEstimate } = await import("./core/estimate.ts");
+      const estimate = estimateDuration(text, options.model);
+
+      console.log(pc.cyan("\nGeneration Estimate\n"));
+      console.log(formatEstimate(estimate));
+      console.log();
+      process.exit(0);
+    }
+
+    // Dry-run mode: show what would happen without generating
+    if (options.dryRun) {
+      const { estimateDuration, formatEstimate } = await import("./core/estimate.ts");
+      const { chunkText, shouldAutoChunk } = await import("./core/chunker.ts");
+
+      const estimate = estimateDuration(text, options.model);
+      const outputPath = prepareOutputPath(options.output);
+      const willChunk = options.autoChunk || shouldAutoChunk(text, parseInt(options.timeout));
+
+      console.log(pc.cyan("\nDry Run - No audio will be generated\n"));
+      console.log(formatEstimate(estimate));
+      console.log();
+      console.log(pc.bold("Output:"));
+      console.log(`  ${outputPath}`);
+
+      if (willChunk) {
+        const chunks = chunkText(text, {
+          maxChars: parseInt(options.chunkSize),
+          overlapChars: 0,
+        });
+        console.log();
+        console.log(pc.bold(`Chunking:`));
+        console.log(`  Will split into ${chunks.length} chunks`);
+        console.log(`  Chunk size: ~${options.chunkSize} chars max`);
+      }
+
+      console.log();
+      process.exit(0);
+    }
+
     if (!options.quiet) {
       console.log(pc.cyan("speak") + " v" + VERSION);
       console.log(pc.dim(`Generating audio for ${text.length} characters...`));
@@ -148,6 +523,303 @@ program
       if (!started) {
         console.log(pc.red("Failed to start TTS server"));
         process.exit(1);
+      }
+
+      // Resume mode - continue from a previous incomplete generation
+      if (options.resume) {
+        const {
+          loadManifest,
+          getPendingChunks,
+          updateChunkStatus,
+          saveManifest,
+          isComplete,
+        } = await import("./core/manifest.ts");
+        const { concatenateWav, cleanupChunkFiles, hasSox } = await import(
+          "./core/concatenate.ts"
+        );
+        const { copyFileSync, unlinkSync } = await import("fs");
+
+        // Verify sox is available
+        if (!hasSox()) {
+          console.log(pc.red("Error: sox is required for resume but not found."));
+          console.log(pc.dim("Install with: brew install sox"));
+          process.exit(1);
+        }
+
+        const manifest = loadManifest(options.resume);
+        if (!manifest) {
+          console.log(pc.red(`Cannot load manifest: ${options.resume}`));
+          process.exit(1);
+        }
+
+        const pending = getPendingChunks(manifest);
+
+        if (pending.length === 0 && isComplete(manifest)) {
+          if (!options.quiet) {
+            console.log(pc.green("All chunks already complete."));
+          }
+
+          // Just do final concatenation
+          const outputPath = manifest.output_file || prepareOutputPath(options.output);
+          const chunkFiles = manifest.chunks.map((c) => c.output);
+          concatenateWav(chunkFiles, outputPath);
+
+          if (!options.quiet) {
+            console.log(pc.green(`✓ Output: ${outputPath}`));
+          }
+
+          // Cleanup unless --keep-chunks
+          if (!options.keepChunks) {
+            cleanupChunkFiles(chunkFiles);
+            try {
+              unlinkSync(options.resume);
+            } catch {
+              // Ignore
+            }
+          }
+
+          // Stop daemon if not in daemon mode
+          if (!options.daemon) {
+            await stopDaemon();
+          }
+
+          process.exit(0);
+        }
+
+        if (!options.quiet) {
+          console.log(
+            pc.cyan(`Resuming: ${pending.length}/${manifest.chunks.length} chunks remaining`)
+          );
+        }
+
+        const timeoutMs = parseInt(options.timeout) * 1000;
+
+        for (const chunk of pending) {
+          if (!options.quiet) {
+            process.stdout.write(
+              pc.dim(`  Chunk ${chunk.index + 1}/${manifest.chunks.length}...`)
+            );
+          }
+
+          try {
+            const result = await generate(
+              {
+                text: chunk.text,
+                model: manifest.params.model,
+                temperature: manifest.params.temperature,
+                speed: manifest.params.speed,
+                voice: manifest.params.voice,
+              },
+              timeoutMs
+            );
+
+            copyFileSync(result.audio_path, chunk.output);
+            updateChunkStatus(manifest, chunk.index, "complete", result.duration);
+            saveManifest(manifest, options.resume);
+
+            if (!options.quiet) {
+              console.log(pc.green(` ✓ ${result.duration.toFixed(1)}s`));
+            }
+          } catch (error) {
+            updateChunkStatus(manifest, chunk.index, "failed");
+            saveManifest(manifest, options.resume);
+
+            const message = error instanceof Error ? error.message : String(error);
+            if (!options.quiet) {
+              console.log(pc.red(` ✗ ${message}`));
+              console.log(pc.yellow(`Resume with: speak --resume ${options.resume}`));
+            }
+
+            // Stop daemon if not in daemon mode
+            if (!options.daemon) {
+              await stopDaemon();
+            }
+
+            process.exit(1);
+          }
+        }
+
+        // All done - concatenate
+        const outputPath = manifest.output_file || prepareOutputPath(options.output);
+        const chunkFiles = manifest.chunks.map((c) => c.output);
+        concatenateWav(chunkFiles, outputPath);
+
+        // Calculate total duration
+        const totalDuration = manifest.chunks.reduce((sum, c) => sum + (c.duration || 0), 0);
+
+        if (!options.quiet) {
+          console.log(
+            pc.green(
+              `✓ Generated ${totalDuration.toFixed(1)}s of audio from ${manifest.chunks.length} chunks`
+            )
+          );
+          console.log(pc.dim(`  Output: ${outputPath}`));
+        }
+
+        // Cleanup unless --keep-chunks
+        if (!options.keepChunks) {
+          cleanupChunkFiles(chunkFiles);
+          try {
+            unlinkSync(options.resume);
+          } catch {
+            // Ignore
+          }
+        }
+
+        // Play audio if requested
+        if (options.play) {
+          if (!options.quiet) {
+            console.log(pc.dim("  Playing..."));
+          }
+          await playAudio(outputPath);
+        }
+
+        // Stop daemon if not in daemon mode
+        if (!options.daemon) {
+          await stopDaemon();
+        }
+
+        process.exit(0);
+      }
+
+      // Auto-chunk mode for long documents
+      if (options.autoChunk) {
+        const {
+          createManifest,
+          saveManifest,
+          updateChunkStatus,
+        } = await import("./core/manifest.ts");
+        const { concatenateWav, cleanupChunkFiles, hasSox } = await import(
+          "./core/concatenate.ts"
+        );
+        const { copyFileSync, mkdirSync, unlinkSync } = await import("fs");
+        const { dirname, join } = await import("path");
+
+        // Verify sox is available
+        if (!hasSox()) {
+          console.log(pc.red("Error: sox is required for --auto-chunk but not found."));
+          console.log(pc.dim("Install with: brew install sox"));
+          process.exit(1);
+        }
+
+        const outputPath = prepareOutputPath(options.output);
+        const tempDir = dirname(outputPath);
+        const manifestPath = join(tempDir, "manifest.json");
+
+        // Ensure temp directory exists
+        mkdirSync(tempDir, { recursive: true });
+
+        // Create manifest for resume capability
+        const manifest = createManifest(
+          text,
+          tempDir,
+          {
+            model: options.model,
+            temperature: parseFloat(options.temp),
+            speed: parseFloat(options.speed),
+            voice: options.voice,
+          },
+          { maxChars: parseInt(options.chunkSize), overlapChars: 0 }
+        );
+        manifest.output_file = outputPath;
+        saveManifest(manifest, manifestPath);
+
+        if (!options.quiet) {
+          console.log(pc.cyan(`Processing ${manifest.chunks.length} chunks...`));
+        }
+
+        const chunkFiles: string[] = [];
+        let totalDuration = 0;
+
+        try {
+          const timeoutMs = parseInt(options.timeout) * 1000;
+
+          for (let i = 0; i < manifest.chunks.length; i++) {
+            const chunkInfo = manifest.chunks[i];
+            if (!chunkInfo) continue;
+
+            if (!options.quiet) {
+              process.stdout.write(
+                pc.dim(`  Chunk ${i + 1}/${manifest.chunks.length} (${chunkInfo.text.length} chars)...`)
+              );
+            }
+
+            const result = await generate(
+              {
+                text: chunkInfo.text,
+                model: options.model,
+                temperature: parseFloat(options.temp),
+                speed: parseFloat(options.speed),
+                voice: options.voice,
+              },
+              timeoutMs
+            );
+
+            // Save chunk
+            copyFileSync(result.audio_path, chunkInfo.output);
+            chunkFiles.push(chunkInfo.output);
+            totalDuration += result.duration;
+
+            // Update manifest
+            updateChunkStatus(manifest, i, "complete", result.duration);
+            saveManifest(manifest, manifestPath);
+
+            if (!options.quiet) {
+              console.log(pc.green(` ✓ ${result.duration.toFixed(1)}s`));
+            }
+          }
+
+          // Concatenate all chunks
+          concatenateWav(chunkFiles, outputPath);
+
+          if (!options.quiet) {
+            console.log(pc.green(`✓ Generated ${totalDuration.toFixed(1)}s of audio from ${manifest.chunks.length} chunks`));
+            console.log(pc.dim(`  Output: ${outputPath}`));
+          }
+
+          // Cleanup temp chunk files and manifest unless --keep-chunks
+          if (!options.keepChunks) {
+            cleanupChunkFiles(chunkFiles);
+            try {
+              unlinkSync(manifestPath);
+            } catch {
+              // Ignore
+            }
+          }
+
+          // Play audio if requested
+          if (options.play) {
+            if (!options.quiet) {
+              console.log(pc.dim("  Playing..."));
+            }
+            await playAudio(outputPath);
+          }
+        } catch (error) {
+          // Update manifest with failure status for current chunk
+          const completedCount = chunkFiles.length;
+          if (completedCount < manifest.chunks.length) {
+            updateChunkStatus(manifest, completedCount, "failed");
+            saveManifest(manifest, manifestPath);
+          }
+
+          // Report partial progress
+          if (chunkFiles.length > 0) {
+            if (!options.quiet) {
+              console.log(
+                pc.yellow(`\n⚠ Generation interrupted after ${chunkFiles.length}/${manifest.chunks.length} chunks`)
+              );
+              console.log(pc.yellow(`  Resume with: speak --resume ${manifestPath}`));
+            }
+          }
+          throw error;
+        }
+
+        // Stop daemon if not in daemon mode
+        if (!options.daemon) {
+          await stopDaemon();
+        }
+
+        process.exit(0);
       }
 
       // Streaming mode - uses new binary protocol streaming
@@ -217,13 +889,23 @@ program
         spinner.start();
 
         try {
-          const result = await generate({
-            text,
-            model: options.model,
-            temperature: parseFloat(options.temp),
-            speed: parseFloat(options.speed),
-            voice: options.voice,
-          });
+          const timeoutMs = parseInt(options.timeout) * 1000;
+          const result = await generate(
+            {
+              text,
+              model: options.model,
+              temperature: parseFloat(options.temp),
+              speed: parseFloat(options.speed),
+              voice: options.voice,
+            },
+            timeoutMs,
+            (progress) => {
+              spinner.updateProgress(progress);
+            },
+            (status) => {
+              spinner.updateStatus(status);
+            }
+          );
 
           spinner.stop(true);
 
@@ -231,7 +913,16 @@ program
           const outputPath = copyToOutput(result.audio_path, options.output);
 
           if (!options.quiet) {
-            console.log(pc.green(`✓ Generated ${result.duration.toFixed(1)}s of audio`));
+            // Check if generation was complete or partial
+            if (result.complete === false) {
+              console.log(pc.yellow(`⚠ Partial generation: ${result.duration.toFixed(1)}s of audio`));
+              console.log(pc.yellow(`  Generated ${result.chunks_generated ?? '?'}/${result.chunks_total ?? '?'} chunks`));
+              if (result.reason) {
+                console.log(pc.yellow(`  Reason: ${result.reason}`));
+              }
+            } else {
+              console.log(pc.green(`✓ Generated ${result.duration.toFixed(1)}s of audio`));
+            }
             console.log(pc.dim(`  Output: ${outputPath}`));
             console.log(pc.dim(`  RTF: ${result.rtf.toFixed(2)}x`));
           }
@@ -318,6 +1009,66 @@ program
       const suffix = isDefault ? pc.dim(" (current)") : "";
       console.log(prefix + model.name + suffix);
       console.log(pc.dim("    " + model.desc));
+    }
+  });
+
+// Subcommand: concat
+program
+  .command("concat <files...>")
+  .description("Concatenate multiple audio files into one")
+  .option("--out <file>", "Output file path", "combined.wav")
+  .action(async (files: string[], options) => {
+    const { concatenateWav, hasSox } = await import("./core/concatenate.ts");
+    const { initLogger } = await import("./ui/logger.ts");
+    const { existsSync, mkdirSync } = await import("fs");
+    const { dirname, basename } = await import("path");
+    const { expandPath } = await import("./core/config.ts");
+
+    initLogger({ logLevel: config.log_level });
+
+    // Check sox availability
+    if (!hasSox()) {
+      console.log(pc.red("Error: sox is required for concatenation but not found."));
+      console.log(pc.dim("Install with: brew install sox"));
+      process.exit(1);
+    }
+
+    // Validate input files
+    const missing = files.filter((f) => !existsSync(f));
+    if (missing.length > 0) {
+      console.log(pc.red("Error: Files not found:"));
+      for (const f of missing) {
+        console.log(pc.red(`  - ${f}`));
+      }
+      process.exit(1);
+    }
+
+    // Sort files naturally (for numbered sequences)
+    const sortedFiles = [...files].sort((a, b) => {
+      return a.localeCompare(b, undefined, { numeric: true });
+    });
+
+    console.log(pc.cyan(`Concatenating ${sortedFiles.length} files...`));
+    for (const f of sortedFiles) {
+      console.log(pc.dim(`  - ${basename(f)}`));
+    }
+
+    try {
+      const outputPath = expandPath(options.out);
+
+      // Ensure output directory exists
+      const outputDir = dirname(outputPath);
+      if (!existsSync(outputDir)) {
+        mkdirSync(outputDir, { recursive: true });
+      }
+
+      concatenateWav(sortedFiles, outputPath);
+
+      console.log(pc.green(`✓ Created ${outputPath}`));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(pc.red(`Error: ${message}`));
+      process.exit(1);
     }
   });
 

@@ -78,6 +78,16 @@ export interface GenerateParams {
 }
 
 /**
+ * Progress event during generation
+ */
+export interface GenerateProgress {
+  chunk: number;
+  total_chunks: number;
+  chars_done: number;
+  chars_total: number;
+}
+
+/**
  * Generate result
  */
 export interface GenerateResult {
@@ -85,6 +95,14 @@ export interface GenerateResult {
   duration: number;
   rtf: number;
   sample_rate: number;
+  /** Whether generation completed fully */
+  complete?: boolean;
+  /** Number of text chunks that were generated */
+  chunks_generated?: number;
+  /** Total number of text chunks planned */
+  chunks_total?: number;
+  /** Reason for partial completion (if not complete) */
+  reason?: string;
 }
 
 /**

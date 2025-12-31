@@ -3,9 +3,21 @@
  */
 
 import { existsSync, mkdirSync, copyFileSync } from "fs";
-import { join, basename } from "path";
+import { join, basename, dirname, extname } from "path";
 import { expandPath } from "./config.ts";
+import { logDecision } from "../ui/logger.ts";
 import type { ChildProcess } from "child_process";
+
+// Supported audio extensions for output files
+const AUDIO_EXTENSIONS = [".wav", ".mp3", ".flac", ".ogg", ".m4a"];
+
+/**
+ * Determine if path looks like a file (has audio extension) or directory
+ */
+function isFilePath(path: string): boolean {
+  const ext = extname(path).toLowerCase();
+  return AUDIO_EXTENSIONS.includes(ext);
+}
 
 /**
  * Generate output filename with timestamp
@@ -19,17 +31,46 @@ export function generateFilename(): string {
 }
 
 /**
- * Ensure output directory exists and return full output path
+ * Prepare output path, handling both file and directory specifications.
+ *
+ * - If path ends with audio extension: use as-is (create parent dir)
+ * - If path ends with / or has no extension: treat as directory, generate filename
  */
-export function prepareOutputPath(outputDir: string): string {
-  const expandedDir = expandPath(outputDir);
+export function prepareOutputPath(outputPath: string): string {
+  const expanded = expandPath(outputPath);
 
-  if (!existsSync(expandedDir)) {
-    mkdirSync(expandedDir, { recursive: true });
+  if (isFilePath(expanded)) {
+    // User specified a filename
+    const dir = dirname(expanded);
+
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+
+    logDecision(
+      "Using user-specified output filename",
+      "Path has audio extension",
+      { output_path: expanded, directory: dir }
+    );
+
+    return expanded;
+  }
+
+  // User specified a directory (or path without extension)
+  if (!existsSync(expanded)) {
+    mkdirSync(expanded, { recursive: true });
   }
 
   const filename = generateFilename();
-  return join(expandedDir, filename);
+  const fullPath = join(expanded, filename);
+
+  logDecision(
+    "Generated output filename",
+    "Path appears to be directory",
+    { output_dir: expanded, filename, full_path: fullPath }
+  );
+
+  return fullPath;
 }
 
 /**

@@ -19,6 +19,7 @@ import { logger } from "../ui/logger.ts";
 
 /**
  * Default timeout for requests (5 minutes for TTS generation)
+ * Can be overridden per-request via timeoutMs parameter.
  */
 const DEFAULT_TIMEOUT = 5 * 60 * 1000;
 
@@ -133,10 +134,152 @@ export async function listModels(): Promise<ListModelsResult> {
 }
 
 /**
- * Generate TTS audio
+ * Progress callback for generation
  */
-export async function generate(params: GenerateParams): Promise<GenerateResult> {
-  return sendRequest<GenerateResult>("generate", params);
+export interface GenerateProgressCallback {
+  (progress: {
+    chunk: number;
+    totalChunks: number;
+    charsDone: number;
+    charsTotal: number;
+  }): void;
+}
+
+/**
+ * Status callback for generation phases
+ */
+export interface GenerateStatusCallback {
+  (status: {
+    phase: "loading_model" | "model_loaded" | "generating";
+    model?: string;
+    loadTimeMs?: number;
+  }): void;
+}
+
+/**
+ * Generate TTS audio with optional progress and status callbacks
+ * 
+ * @param params - Generation parameters
+ * @param timeoutMs - Timeout in milliseconds (default: 5 minutes, 0 = no timeout)
+ * @param onProgress - Optional callback for progress updates
+ * @param onStatus - Optional callback for status updates
+ */
+export async function generate(
+  params: GenerateParams,
+  timeoutMs?: number,
+  onProgress?: GenerateProgressCallback,
+  onStatus?: GenerateStatusCallback
+): Promise<GenerateResult> {
+  const timeout = timeoutMs === 0 ? 24 * 60 * 60 * 1000 : (timeoutMs ?? DEFAULT_TIMEOUT);
+  const requestId = generateId();
+  const request: Request = { id: requestId, method: "generate", params: { ...params } };
+
+  return new Promise((resolve, reject) => {
+    let responseBuffer = "";
+    let timeoutId: Timer | null = null;
+    let connectTimeoutId: Timer | null = null;
+
+    const socket = connect({ path: SOCKET_PATH });
+
+    // Connection timeout
+    connectTimeoutId = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("Connection timeout - server not running?"));
+    }, CONNECT_TIMEOUT);
+
+    socket.on("connect", () => {
+      if (connectTimeoutId) clearTimeout(connectTimeoutId);
+
+      // Request timeout
+      timeoutId = setTimeout(() => {
+        socket.destroy();
+        reject(new Error(`Request timeout after ${timeout}ms`));
+      }, timeout);
+
+      // Send request
+      const requestLine = JSON.stringify(request) + "\n";
+      socket.write(requestLine);
+    });
+
+    socket.on("data", (data) => {
+      responseBuffer += data.toString();
+
+      // Process complete lines
+      while (responseBuffer.includes("\n")) {
+        const newlineIndex = responseBuffer.indexOf("\n");
+        const line = responseBuffer.slice(0, newlineIndex).trim();
+        responseBuffer = responseBuffer.slice(newlineIndex + 1);
+
+        if (!line) continue;
+
+        try {
+          const message = JSON.parse(line);
+
+          // Check if this is our response
+          if (message.id !== requestId) continue;
+
+          // Handle status events
+          if (message.status && onStatus) {
+            onStatus({
+              phase: message.status.phase,
+              model: message.status.model,
+              loadTimeMs: message.status.load_time_ms,
+            });
+            continue;
+          }
+
+          // Handle progress events
+          if (message.progress && onProgress) {
+            onProgress({
+              chunk: message.progress.chunk,
+              totalChunks: message.progress.total_chunks,
+              charsDone: message.progress.chars_done,
+              charsTotal: message.progress.chars_total,
+            });
+            continue;
+          }
+
+          // Handle error
+          if (message.error) {
+            if (timeoutId) clearTimeout(timeoutId);
+            socket.destroy();
+            reject(new Error(message.error.message));
+            return;
+          }
+
+          // Handle result
+          if (message.result) {
+            if (timeoutId) clearTimeout(timeoutId);
+            socket.destroy();
+            resolve(message.result as GenerateResult);
+            return;
+          }
+        } catch (e) {
+          // Ignore parse errors for incomplete lines
+        }
+      }
+    });
+
+    socket.on("error", (err) => {
+      if (connectTimeoutId) clearTimeout(connectTimeoutId);
+      if (timeoutId) clearTimeout(timeoutId);
+
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        reject(new Error("Server not running - socket not found"));
+      } else if ((err as NodeJS.ErrnoException).code === "ECONNREFUSED") {
+        reject(new Error("Server not running - connection refused"));
+      } else {
+        reject(err);
+      }
+    });
+
+    socket.on("close", (hadError) => {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (hadError) {
+        reject(new Error("Socket closed with error"));
+      }
+    });
+  });
 }
 
 /**

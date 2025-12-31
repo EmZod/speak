@@ -15,9 +15,24 @@ export interface ProgressOptions {
   quiet?: boolean;
 }
 
+export interface GenerationProgress {
+  chunk: number;
+  totalChunks: number;
+  charsDone: number;
+  charsTotal: number;
+}
+
+export interface GenerationStatus {
+  phase: "loading_model" | "model_loaded" | "generating";
+  model?: string;
+  loadTimeMs?: number;
+}
+
 export interface Progress {
   start: () => void;
   update: (message: string) => void;
+  updateProgress: (progress: GenerationProgress) => void;
+  updateStatus: (status: GenerationStatus) => void;
   stop: (success?: boolean, message?: string) => void;
 }
 
@@ -67,6 +82,10 @@ export function createSpinner(options: ProgressOptions): Progress {
   let intervalId: Timer | null = null;
   let startTime = 0;
   let currentMessage = "";
+  
+  // Track progress for ETA calculation
+  let lastProgress: GenerationProgress | null = null;
+  let charRate = 0; // chars per second based on actual progress
 
   const estimatedTime = estimateGenerationTime(text);
   const estimatedDuration = estimateAudioDuration(text);
@@ -80,7 +99,21 @@ export function createSpinner(options: ProgressOptions): Progress {
     const elapsed = (Date.now() - startTime) / 1000;
     let line = `${pc.cyan(frame)} ${currentMessage}`;
 
-    if (showEta && estimatedTime > 2) {
+    // Show progress-based ETA if we have progress data
+    if (lastProgress && lastProgress.charsTotal > 0) {
+      const pct = Math.round((lastProgress.charsDone / lastProgress.charsTotal) * 100);
+      line = `${pc.cyan(frame)} Generating: ${pct}% (${lastProgress.chunk}/${lastProgress.totalChunks} chunks)`;
+      
+      // Calculate remaining time based on observed char rate
+      if (charRate > 0) {
+        const remaining = lastProgress.charsTotal - lastProgress.charsDone;
+        const etaSeconds = Math.round(remaining / charRate);
+        if (etaSeconds > 0) {
+          line += pc.dim(` ~${formatDuration(etaSeconds)} remaining`);
+        }
+      }
+    } else if (showEta && estimatedTime > 2) {
+      // Fall back to estimate-based ETA
       const remaining = Math.max(0, estimatedTime - elapsed);
       if (remaining > 0) {
         line += pc.dim(` (ETA: ${formatDuration(remaining)})`);
@@ -111,6 +144,31 @@ export function createSpinner(options: ProgressOptions): Progress {
 
     update(message: string) {
       currentMessage = message;
+    },
+    
+    updateProgress(progress: GenerationProgress) {
+      // Calculate char rate for ETA
+      if (progress.charsDone > 0) {
+        const elapsed = (Date.now() - startTime) / 1000;
+        charRate = progress.charsDone / elapsed;
+      }
+      lastProgress = progress;
+    },
+
+    updateStatus(status: GenerationStatus) {
+      // Update message based on status phase
+      if (status.phase === "loading_model") {
+        currentMessage = `Loading model${status.model ? `: ${status.model}` : ""}...`;
+      } else if (status.phase === "model_loaded") {
+        // Print model loaded line and switch to generating
+        if (!quiet) {
+          const loadTime = status.loadTimeMs ? ` (${(status.loadTimeMs / 1000).toFixed(1)}s)` : "";
+          process.stdout.write(`\r\x1b[K${pc.green("✓")} Model loaded${loadTime}\n`);
+        }
+        currentMessage = "Generating audio...";
+      } else if (status.phase === "generating") {
+        currentMessage = "Generating audio...";
+      }
     },
 
     stop(success = true, message?: string) {
