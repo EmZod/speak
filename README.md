@@ -22,7 +22,7 @@ alias speak="bun run $(pwd)/src/index.ts"
 
 ## Requirements
 
-- macOS with Apple Silicon (M1 Series)
+- macOS with Apple Silicon (M Series)
 - [Bun](https://bun.sh)
 - Python 3.10+
 - sox (for long documents): `brew install sox`
