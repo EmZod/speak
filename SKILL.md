@@ -151,6 +151,66 @@ speak long-document.md --auto-chunk --output output.wav
 speak --resume ~/Audio/speak/manifest.json
 ```
 
+## Voice Cloning & Multi-Voice Content
+
+### Discovering Available Voices
+
+Voice samples are stored in `~/.chatter/voices/`. Always check what's available:
+
+```bash
+# List available voice samples
+ls ~/.chatter/voices/*.wav 2>/dev/null
+
+# Example output:
+# alan_watts.wav
+# david_attenborough.wav
+# morgan_freeman.wav
+# stephen_fry.wav
+# ursula_leguin.wav
+```
+
+### Using a Custom Voice
+
+```bash
+# Clone a specific voice
+speak "Hello world" --voice ~/.chatter/voices/morgan_freeman.wav --stream
+
+# Use shorthand if in voices directory
+speak "Hello world" --voice morgan_freeman.wav --stream
+```
+
+### Multi-Voice Content (Debates, Dramas, Podcasts)
+
+For content with multiple speakers:
+
+1. **Split script into separate files per speaker**
+   ```
+   01_host_intro.txt
+   02_guest1_response.txt
+   03_host_followup.txt
+   04_guest2_rebuttal.txt
+   ```
+
+2. **Generate each segment with appropriate voice**
+   ```bash
+   speak 01_host_intro.txt --voice stephen_fry.wav --output wav/01.wav
+   speak 02_guest1_response.txt --voice morgan_freeman.wav --output wav/02.wav
+   speak 03_host_followup.txt --voice stephen_fry.wav --output wav/03.wav
+   speak 04_guest2_rebuttal.txt --voice ursula_leguin.wav --output wav/04.wav
+   ```
+
+3. **Concatenate in order**
+   ```bash
+   speak concat wav/*.wav --out final_debate.wav
+   ```
+
+### Adding New Voice Samples
+
+To add a new voice for cloning:
+1. Get a clean 10-30 second audio sample (WAV format, clear speech, minimal background noise)
+2. Save to `~/.chatter/voices/speaker_name.wav`
+3. The voice is now available via `--voice speaker_name.wav`
+
 ## Emotion Tags
 
 Add expressive sounds inline with text:
