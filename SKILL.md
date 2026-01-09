@@ -171,13 +171,15 @@ ls ~/.chatter/voices/*.wav 2>/dev/null
 
 ### Using a Custom Voice
 
-```bash
-# Clone a specific voice
-speak "Hello world" --voice ~/.chatter/voices/morgan_freeman.wav --stream
+**Always use the full path to voice files:**
 
-# Use shorthand if in voices directory
-speak "Hello world" --voice morgan_freeman.wav --stream
+```bash
+# Clone a specific voice (full path required)
+speak "Hello world" --voice ~/.chatter/voices/morgan_freeman.wav --stream
 ```
+
+> **Important:** Do not use just the filename (e.g., `--voice morgan_freeman.wav`). 
+> Always use the full path: `--voice ~/.chatter/voices/morgan_freeman.wav`
 
 ### Multi-Voice Content (Debates, Dramas, Podcasts)
 
@@ -191,12 +193,12 @@ For content with multiple speakers:
    04_guest2_rebuttal.txt
    ```
 
-2. **Generate each segment with appropriate voice**
+2. **Generate each segment with appropriate voice (use full paths)**
    ```bash
-   speak 01_host_intro.txt --voice stephen_fry.wav --output wav/01.wav
-   speak 02_guest1_response.txt --voice morgan_freeman.wav --output wav/02.wav
-   speak 03_host_followup.txt --voice stephen_fry.wav --output wav/03.wav
-   speak 04_guest2_rebuttal.txt --voice ursula_leguin.wav --output wav/04.wav
+   speak 01_host_intro.txt --voice ~/.chatter/voices/stephen_fry.wav --output wav/01.wav
+   speak 02_guest1_response.txt --voice ~/.chatter/voices/morgan_freeman.wav --output wav/02.wav
+   speak 03_host_followup.txt --voice ~/.chatter/voices/stephen_fry.wav --output wav/03.wav
+   speak 04_guest2_rebuttal.txt --voice ~/.chatter/voices/ursula_leguin.wav --output wav/04.wav
    ```
 
 3. **Concatenate in order**
