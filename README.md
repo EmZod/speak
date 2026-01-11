@@ -83,6 +83,7 @@ speak concat part1.wav part2.wav --out combined.wav
 - **[docs/troubleshooting.md](docs/troubleshooting.md)** - Common issues and fixes
 - **[SKILL.md](SKILL.md)** - Agent-optimized reference
 - **[CHANGELOG.md](CHANGELOG.md)** - Version history
+- **[.agentic/](.agentic/)** - Agentic engineering artifacts (optimization reports, focus group tests)
 
 ## Development
 
