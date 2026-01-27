@@ -3,9 +3,9 @@ name: speak-tts
 description: Give your agent the ability to speak to you real-time. Talk to your Claude! Local TTS with voice cloning on Apple Silicon. Use for reading articles aloud, audiobook narration, or voice responses. Runs entirely on-device via MLX - private, no API keys. Supports auto-chunking, batch processing, and resume.
 ---
 
-# speak - Text to Speech for Agents
+# speak - Talk to your Claude!
 
-Convert text to natural speech audio using Chatterbox TTS on Apple Silicon.
+Give your agent the ability to speak to you real-time. Local TTS with voice cloning on Apple Silicon.
 
 ## Prerequisites
 
