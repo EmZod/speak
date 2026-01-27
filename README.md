@@ -4,6 +4,14 @@
 
 A fast CLI tool for AI agents to convert their text output to speech using Chatterbox TTS on Apple Silicon.
 
+## Install as Agent Skill
+
+Add this skill to Claude Code, Cursor, Windsurf, and other AI agents:
+
+```bash
+npx skills add EmZod/speak
+```
+
 ## Quick Start
 
 ```bash
@@ -95,7 +103,12 @@ bun run typecheck    # Type check
 
 ## For AI Agents
 
-Copy [SKILL.md](SKILL.md) to your agent's skills directory:
+**Recommended:** Install via the skills registry:
+```bash
+npx skills add EmZod/speak
+```
+
+Or manually copy [SKILL.md](SKILL.md) to your agent's skills directory:
 ```bash
 cp SKILL.md ~/.claude/skills/speak-tts/SKILL.md
 ```
