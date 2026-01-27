@@ -1,10 +1,11 @@
 ---
 name: speak-tts
-description: Give your agent the ability to speak to you real-time. Talk to your Claude! Local TTS with voice cloning on Apple Silicon. Use for reading articles aloud, audiobook narration, or voice responses. Runs entirely on-device via MLX - private, no API keys. Supports auto-chunking, batch processing, and resume.
+description: Give your agent the ability to speak to you real-time. Talk to your Claude! Local TTS, text-to-speech, voice synthesis, audio generation with voice cloning on Apple Silicon. Use for reading articles aloud, audiobook narration, or voice responses. Runs entirely on-device via MLX - private, no API keys.
 ---
 
 # speak - Talk to your Claude!
 
+Give your agent the ability to speak to you real-time. Local text-to-speech, voice cloning, and audio generation on Apple Silicon.
 Give your agent the ability to speak to you real-time. Local TTS with voice cloning on Apple Silicon.
 
 ## Prerequisites
