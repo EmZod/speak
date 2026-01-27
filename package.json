@@ -1,7 +1,7 @@
 {
-  "name": "speak-cli",
-  "version": "1.1.0",
-  "description": "Convert text to speech using Chatterbox TTS on Apple Silicon",
+  "name": "@jay-zod/speak",
+  "version": "1.1.1",
+  "description": "Local TTS with voice cloning for AI agents. Convert text to speech using Chatterbox on Apple Silicon.",
   "module": "src/index.ts",
   "type": "module",
   "bin": {
@@ -31,7 +31,14 @@
   "engines": {
     "bun": ">=1.0.0"
   },
-  "keywords": ["tts", "text-to-speech", "chatterbox", "mlx", "apple-silicon"],
-  "author": "",
-  "license": "MIT"
+  "keywords": ["tts", "text-to-speech", "chatterbox", "mlx", "apple-silicon", "pi-package", "voice-cloning", "narration", "audiobook", "ai-agent", "claude-code", "skills"],
+  "author": "jay-zod",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/EmZod/speak"
+  },
+  "pi": {
+    "skills": ["SKILL.md"]
+  }
 }
