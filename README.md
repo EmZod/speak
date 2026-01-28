@@ -1,9 +1,21 @@
 <p align="center">
-  <img src="assets/banner.jpeg" alt="speak - Talk to your Claude" width="100%">
+<pre>
+███████╗██████╗ ███████╗ █████╗ ██╗  ██╗
+██╔════╝██╔══██╗██╔════╝██╔══██╗██║ ██╔╝
+███████╗██████╔╝█████╗  ███████║█████╔╝ 
+╚════██║██╔═══╝ ██╔══╝  ██╔══██║██╔═██╗ 
+███████║██║     ███████╗██║  ██║██║  ██╗
+╚══════╝╚═╝     ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝
+</pre>
 </p>
 
-<h1 align="center">speak</h1>
 <h3 align="center">Talk to your Claude.</h3>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <img src="https://img.shields.io/badge/voice%20cloning-✓-brightgreen.svg" alt="Voice Cloning">
+  <img src="https://img.shields.io/badge/platform-Apple%20Silicon-orange.svg" alt="Platform">
+</p>
 
 <p align="center">
   <strong>Voice cloning. Long documents. Audiobook quality. Local & private.</strong>
