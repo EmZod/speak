@@ -1,120 +1,137 @@
 <p align="center">
-  <img src="assets/banner.jpeg" alt="speak - High performance CLI tool your agent can use to generate life like speech, real time on Apple Silicon" width="100%">
+  <img src="assets/banner.jpeg" alt="speak - Talk to your Claude" width="100%">
 </p>
 
-A fast CLI tool for AI agents to convert their text output to speech using Chatterbox TTS on Apple Silicon.
+```
+   ┌─────────────────────────────────────────────────────────────┐
+   │                                                             │
+   │   ███████╗██████╗ ███████╗ █████╗ ██╗  ██╗                  │
+   │   ██╔════╝██╔══██╗██╔════╝██╔══██╗██║ ██╔╝                  │
+   │   ███████╗██████╔╝█████╗  ███████║█████╔╝                   │
+   │   ╚════██║██╔═══╝ ██╔══╝  ██╔══██║██╔═██╗                   │
+   │   ███████║██║     ███████╗██║  ██║██║  ██╗                  │
+   │   ╚══════╝╚═╝     ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝                  │
+   │                                                             │
+   │               Talk to your Claude.                          │
+   │                                                             │
+   └─────────────────────────────────────────────────────────────┘
+```
 
-## Install as Agent Skill
+<p align="center">
+  <strong>Voice cloning. Long documents. Audiobook quality. Local & private.</strong>
+</p>
 
-Add this skill to Claude Code, Cursor, Windsurf, and other AI agents:
+<p align="center">
+  <code>speak article.md --stream</code> → Audio starts in seconds
+</p>
 
+---
+
+## Install
+
+**For AI Agents** (Claude Code, Cursor, Windsurf):
 ```bash
 npx skills add EmZod/speak
 ```
 
-## Quick Start
-
+**CLI:**
 ```bash
 git clone https://github.com/EmZod/speak.git
-cd speak
-bun install
-
-# First run auto-installs Python dependencies
-bun run src/index.ts "Hello, world!" --play
-```
-
-Create an alias for easier access:
-```bash
+cd speak && bun install
 alias speak="bun run $(pwd)/src/index.ts"
 ```
 
-## Requirements
+**Requirements:** macOS Apple Silicon · Bun · Python 3.10+ · sox (`brew install sox`)
 
-- macOS with Apple Silicon (M Series)
-- [Bun](https://bun.sh)
-- Python 3.10+
-- sox (for long documents): `brew install sox`
+---
 
-## Basic Usage
+## Usage
 
 ```bash
 speak "Hello, world!" --play        # Generate and play
-speak article.md --stream           # Stream long content
-speak --clipboard --play            # Read from clipboard
+speak article.md --stream           # Stream long content  
 speak document.md --output out.wav  # Save to file
+speak --clipboard --play            # Read from clipboard
 ```
 
-## Key Features
+---
+
+## Voice Cloning
+
+Clone any voice from a 10-30 second sample:
 
 ```bash
-# Long documents - auto-chunk for reliability
-speak book.md --auto-chunk --output book.wav
-
-# Resume interrupted generation
-speak --resume manifest.json
-
-# Batch processing
-speak *.md --output-dir ~/Audio/
-
-# Estimate duration before generating
-speak --estimate document.md
-
-# Concatenate audio files
-speak concat part1.wav part2.wav --out combined.wav
+# Use your cloned voice
+speak "Hello" --voice ~/.chatter/voices/morgan_freeman.wav --play
 ```
+
+---
+
+## Long Documents
+
+```bash
+speak book.md --auto-chunk --output book.wav    # Auto-chunk for reliability
+speak --resume manifest.json                     # Resume interrupted generation
+speak *.md --output-dir ~/Audio/                 # Batch processing
+speak --estimate document.md                     # Estimate duration first
+```
+
+---
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `speak <text\|file>` | Generate speech |
-| `speak health` | Check system status |
-| `speak models` | List available models |
-| `speak concat <files>` | Combine audio files |
-| `speak daemon kill` | Stop TTS server |
+```
+speak <text|file>      Generate speech
+speak health           Check system status
+speak models           List available models
+speak concat <files>   Combine audio files
+speak daemon kill      Stop TTS server
+```
 
-## Common Options
+---
 
-| Option | Description |
-|--------|-------------|
-| `--play` | Play after generation |
-| `--stream` | Stream as it generates |
-| `--output <path>` | Output file or directory |
-| `--auto-chunk` | Chunk long documents |
-| `--estimate` | Show duration estimate |
-| `--dry-run` | Preview without generating |
+## Options
+
+```
+--play          Play after generation
+--stream        Stream as it generates
+--output        Output file or directory
+--voice         Custom voice file (WAV)
+--auto-chunk    Chunk long documents
+--estimate      Show duration estimate
+--dry-run       Preview without generating
+```
+
+---
+
+## Performance
+
+```
+Long documents     ████████████████████  Streaming, auto-chunk
+Voice cloning      ████████████████████  Any voice from sample
+Emotion tags       ████████████████████  [laugh], [sigh], etc.
+Quality            ████████████████████  Audiobook grade
+```
+
+---
+
+## See Also
+
+Need instant audio (~90ms)? Try [**speakturbo**](https://github.com/EmZod/Speak-Turbo).
+
+---
 
 ## Documentation
 
-- **[docs/usage.md](docs/usage.md)** - Complete usage guide
-- **[docs/configuration.md](docs/configuration.md)** - Config file, environment variables, shell setup
-- **[docs/troubleshooting.md](docs/troubleshooting.md)** - Common issues and fixes
-- **[SKILL.md](SKILL.md)** - Agent-optimized reference
-- **[CHANGELOG.md](CHANGELOG.md)** - Version history
-- **[.agentic/](.agentic/)** - Agentic engineering artifacts (optimization reports, focus group tests)
+| File | Content |
+|------|---------|
+| [SKILL.md](SKILL.md) | Full usage guide for agents |
+| [docs/usage.md](docs/usage.md) | Complete CLI reference |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Common issues & fixes |
+| [AGENTS.md](AGENTS.md) | Architecture & development |
 
-## Development
+---
 
-```bash
-bun install          # Install dependencies
-bun test             # Run tests
-bun run typecheck    # Type check
-```
-
-## For AI Agents
-
-**Recommended:** Install via the skills registry:
-```bash
-npx skills add EmZod/speak
-```
-
-Or manually copy [SKILL.md](SKILL.md) to your agent's skills directory:
-```bash
-cp SKILL.md ~/.claude/skills/speak-tts/SKILL.md
-```
-
-See [AGENTS.md](AGENTS.md) for setup details.
-
-## License
-
-MIT
+<p align="center">
+  <sub>MIT License · Built on <a href="https://github.com/resemble-ai/chatterbox">Chatterbox TTS</a></sub>
+</p>
